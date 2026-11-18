@@ -3687,6 +3687,7 @@ sub config_to_command {
     }
 
     if (min_version($machine_version, 4, 0) && (my $audio = conf_has_audio($conf))) {
+        die "audio devices are not supported on s390x\n" if $arch eq 's390x'; # PCI devices only
         my $audiopciaddr = print_pci_addr("audio0", $arch);
         my $audio_devs = audio_devs($audio, $audiopciaddr, $machine_version);
         push @$devices, @$audio_devs;
@@ -3770,6 +3771,8 @@ sub config_to_command {
     }
 
     my $virtiofs_enabled = PVE::QemuServer::Virtiofs::virtiofs_enabled($conf);
+    # only the PCI variant of the virtiofs device is supported
+    die "virtiofs is not supported on s390x\n" if $virtiofs_enabled && $arch eq 's390x';
 
     PVE::QemuServer::Memory::config(
         $conf,
