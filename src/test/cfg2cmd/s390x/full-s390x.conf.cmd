@@ -22,9 +22,9 @@
   -chardev 'socket,id=sclp,path=/var/run/qemu-server/8006.sclp,server=on,wait=off' \
   -device 'sclpconsole,chardev=sclp' \
   -chardev 'socket,id=serial0,path=/var/run/qemu-server/8006.serial0,server=on,wait=off' \
-  -device 'sclplmconsole,chardev=serial0' \
-  -chardev 'socket,id=serial1,path=/var/run/qemu-server/8006.serial1,server=on,wait=off' \
   -device 'virtio-serial,id=virtioserial0,devno=fe.0.0059' \
+  -device 'virtconsole,chardev=serial0,bus=virtioserial0.0' \
+  -chardev 'socket,id=serial1,path=/var/run/qemu-server/8006.serial1,server=on,wait=off' \
   -device 'virtconsole,chardev=serial1,bus=virtioserial0.0' \
   -chardev 'socket,id=serial3,path=/var/run/qemu-server/8006.serial3,server=on,wait=off' \
   -device 'virtconsole,chardev=serial3,bus=virtioserial0.0' \

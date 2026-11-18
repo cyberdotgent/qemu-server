@@ -10,6 +10,7 @@
   -daemonize \
   -smp '2,sockets=1,cores=2,maxcpus=2' \
   -nodefaults \
+  -vga none \
   -nographic \
   -cpu host \
   -m 2048 \
@@ -18,7 +19,8 @@
   -chardev 'socket,id=sclp,path=/var/run/qemu-server/8006.sclp,server=on,wait=off' \
   -device 'sclpconsole,chardev=sclp' \
   -chardev 'socket,id=serial0,path=/var/run/qemu-server/8006.serial0,server=on,wait=off' \
-  -device 'sclplmconsole,chardev=serial0' \
+  -device 'virtio-serial,id=virtioserial0,devno=fe.0.0059' \
+  -device 'virtconsole,chardev=serial0,bus=virtioserial0.0' \
   -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
   -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
   -device 'virtio-scsi-ccw,id=virtioscsi2,devno=fe.0.0063' \

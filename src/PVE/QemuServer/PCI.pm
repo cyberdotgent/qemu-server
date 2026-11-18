@@ -246,7 +246,7 @@ sub get_pci_addr_map {
         hostpci13 => { bus => 2, addr => 22 },
         hostpci14 => { bus => 2, addr => 23 },
         hostpci15 => { bus => 2, addr => 24 },
-        'virtioserial0' => { bus => 2, addr => 25 }, # serial1 to serial3 on s390x
+        'virtioserial0' => { bus => 2, addr => 25 }, # serial0 to serial3 on s390x
         'virtioscsi0' => { bus => 3, addr => 1 },
         'virtioscsi1' => { bus => 3, addr => 2 },
         'virtioscsi2' => { bus => 3, addr => 3 },

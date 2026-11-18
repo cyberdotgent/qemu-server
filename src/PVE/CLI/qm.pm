@@ -103,6 +103,16 @@ sub run_vnc_proxy {
     exit(0);
 }
 
+# c3270 sizes its screen once at startup and needs at least 24x80 for a 3270 model 2. termproxy
+# only sets the final size of the terminal after starting the command, so wait for it a moment.
+my sub wait_for_3270_terminal_size {
+    for (my $i = 0; $i < 20; $i++) {
+        my ($rows, $cols) = split(/\s+/, `stty size 2>/dev/null` // '');
+        return if !defined($cols) || ($rows >= 24 && $cols >= 80); # not a terminal or large enough
+        select(undef, undef, undef, 0.1);
+    }
+}
+
 sub print_recursive_hash {
     my ($prefix, $hash, $key) = @_;
 
@@ -783,7 +793,8 @@ __PACKAGE__->register_method({
     path => 'terminal',
     method => 'POST',
     description =>
-        "Open a terminal using a serial device (The VM need to have a serial device configured, for example 'serial0: socket')",
+        "Open a terminal using a serial device (The VM need to have a serial device configured, for example 'serial0: socket')"
+        . " or a console of an s390x VM.",
     parameters => {
         additionalProperties => 0,
         properties => {
@@ -794,10 +805,12 @@ __PACKAGE__->register_method({
             iface => {
                 description =>
                     "Select the serial device. By default we simply use the first suitable device."
-                    . " 'sclp' is the firmware console of s390x VMs.",
+                    . " On s390x, 'sclp' (VT220, Linux), 'sclplm' (line mode) and '3270'"
+                    . " (integrated 3270) select the SCLP consoles, the default is the first"
+                    . " console of the OS type.",
                 type => 'string',
                 optional => 1,
-                enum => [qw(serial0 serial1 serial2 serial3 sclp)],
+                enum => [qw(serial0 serial1 serial2 serial3 sclp sclplm 3270)],
             },
             escape => {
                 description => "Escape character.",
@@ -823,24 +836,25 @@ __PACKAGE__->register_method({
         } else {
             die "invalid escape character definition: $escape\n";
         }
-        my $escapemsg = '';
-        if ($escape) {
-            $escapemsg = sprintf(' (press Ctrl+%c to exit)', $escape + 0x40);
-            $escape = sprintf(',escape=0x%x', $escape);
-        } else {
-            $escape = '';
-        }
 
         my $conf = PVE::QemuConfig->load_config($vmid); # check if VM exists
 
         my $iface = $param->{iface};
+        my $consoles =
+            PVE::QemuServer::Helpers::get_vm_arch($conf) eq 's390x'
+            ? PVE::QemuServer::Helpers::get_s390x_consoles($conf)
+            : [];
 
-        if ($iface && $iface eq 'sclp') {
-            die "interface 'sclp' only exists for s390x VMs\n"
-                if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
+        if ($iface && $iface =~ m/^(?:sclp|sclplm|3270)$/) {
+            die "interface '$iface' only exists for s390x VMs\n" if !scalar($consoles->@*);
+            die "VM $vmid has no console '$iface' with its OS type, it has: "
+                . join(', ', $consoles->@*) . "\n"
+                if !grep { $_ eq $iface } $consoles->@*;
         } elsif ($iface) {
             die "serial interface '$iface' is not configured\n" if !$conf->{$iface};
             die "wrong serial type on interface '$iface'\n" if $conf->{$iface} ne 'socket';
+        } elsif (scalar($consoles->@*)) {
+            $iface = $consoles->[0];
         } else {
             foreach my $opt (qw(serial0 serial1 serial2 serial3)) {
                 if ($conf->{$opt} && ($conf->{$opt} eq 'socket')) {
@@ -853,13 +867,26 @@ __PACKAGE__->register_method({
 
         die "VM $vmid not running\n" if !PVE::QemuServer::check_running($vmid);
 
-        my $socket = "/var/run/qemu-server/${vmid}.$iface";
+        die "VM $vmid has no console '$iface' (not supported by the QEMU it runs with)\n"
+            if $iface !~ m/^serial\d$/
+            && !-S PVE::QemuServer::Helpers::console_socket($vmid, $iface);
 
-        my $cmd = "socat UNIX-CONNECT:$socket STDIO,raw,echo=0$escape";
+        my $cmd = PVE::QemuServer::Helpers::get_terminal_command($vmid, $iface, $escape);
+
+        my $escapemsg = '';
+        if ($iface eq '3270') {
+            $escapemsg = ' (press Ctrl+] for the c3270 prompt, quit to exit)';
+        } elsif ($iface eq 'sclplm') {
+            $escapemsg = ' (line mode, press Ctrl+D to exit)';
+        } elsif ($escape) {
+            $escapemsg = sprintf(' (press Ctrl+%c to exit)', $escape + 0x40);
+        }
 
         print "starting serial terminal on interface ${iface}${escapemsg}\n";
 
-        system($cmd);
+        wait_for_3270_terminal_size() if $iface eq '3270';
+
+        system($cmd->@*);
 
         return;
     },

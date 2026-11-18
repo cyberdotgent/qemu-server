@@ -10,14 +10,18 @@
   -daemonize \
   -smp '1,sockets=1,cores=1,maxcpus=1' \
   -nodefaults \
+  -vga none \
   -nographic \
   -cpu host \
   -m 1024 \
   -object '{"id":"throttle-drive-scsi0","limits":{},"qom-type":"throttle-group"}' \
-  -chardev 'socket,id=sclp,path=/var/run/qemu-server/8006.sclp,server=on,wait=off' \
-  -device 'sclpconsole,chardev=sclp' \
+  -chardev 'socket,id=sclplm,path=/var/run/qemu-server/8006.sclplm,server=on,wait=off' \
+  -device 'sclplmconsole,chardev=sclplm,echo=off' \
+  -chardev 'socket,id=sclp3270,path=/var/run/qemu-server/8006.3270,server=on,wait=off,tn3270=on' \
+  -device 'sclp3270console,chardev=sclp3270' \
   -chardev 'socket,id=serial0,path=/var/run/qemu-server/8006.serial0,server=on,wait=off' \
-  -device 'sclplmconsole,chardev=serial0' \
+  -device 'virtio-serial,id=virtioserial0,devno=fe.0.0059' \
+  -device 'virtconsole,chardev=serial0,bus=virtioserial0.0' \
   -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
   -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
   -device 'virtio-scsi-ccw,id=virtioscsi0,devno=fe.0.0061' \

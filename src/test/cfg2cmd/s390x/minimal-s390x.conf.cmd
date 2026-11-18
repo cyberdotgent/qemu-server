@@ -10,12 +10,15 @@
   -daemonize \
   -smp '1,sockets=1,cores=1,maxcpus=1' \
   -nodefaults \
+  -vga none \
   -nographic \
   -cpu host \
   -m 1024 \
   -object '{"id":"throttle-drive-virtio0","limits":{},"qom-type":"throttle-group"}' \
-  -chardev 'socket,id=sclp,path=/var/run/qemu-server/8006.sclp,server=on,wait=off' \
-  -device 'sclpconsole,chardev=sclp' \
+  -chardev 'socket,id=sclplm,path=/var/run/qemu-server/8006.sclplm,server=on,wait=off' \
+  -device 'sclplmconsole,chardev=sclplm,echo=off' \
+  -chardev 'socket,id=sclp3270,path=/var/run/qemu-server/8006.3270,server=on,wait=off,tn3270=on' \
+  -device 'sclp3270console,chardev=sclp3270' \
   -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
   -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
   -blockdev '{"detect-zeroes":"on","discard":"ignore","driver":"throttle","file":{"cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"qcow2","file":{"aio":"io_uring","cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"file","filename":"/var/lib/vz/images/8006/vm-8006-disk-0.qcow2","node-name":"edd19f6c1b3a6d5a6248c3376a91a16","read-only":false},"node-name":"fdd19f6c1b3a6d5a6248c3376a91a16","read-only":false},"node-name":"drive-virtio0","read-only":false,"throttle-group":"throttle-drive-virtio0"}' \

@@ -395,6 +395,9 @@ $qemu_server_helpers->mock(
     get_host_phys_address_bits => sub {
         return 46;
     },
+    kvm_device_types => sub {
+        return { sclp3270console => 1 };
+    },
     kvm_user_version => sub {
         return get_test_qemu_version();
     },

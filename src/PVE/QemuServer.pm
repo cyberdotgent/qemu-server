@@ -1909,6 +1909,8 @@ sub destroy_vm {
     eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) };
     warn $@ if $@;
 
+    unlink PVE::QemuServer::Helpers::terminal_history_file($vmid, 'sclplm');
+
     if (defined $replacement_conf) {
         PVE::QemuConfig->write_config($vmid, $replacement_conf);
     } else {
@@ -3114,7 +3116,7 @@ my sub get_vga_properties {
         if ($arch eq 'aarch64') {
             $vga->{type} = 'virtio';
         } elsif ($arch eq 's390x') {
-            $vga->{type} = 'serial0'; # the SCLP console
+            $vga->{type} = 'none'; # no graphics by default, the consoles are SCLP consoles
         } elsif (min_version($machine_version, 2, 9)) {
             $vga->{type} = (!$winversion || $winversion >= 6) ? 'std' : 'cirrus';
         } else {
@@ -3356,11 +3358,28 @@ sub config_to_command {
     my @usbdevices = PVE::QemuServer::USB::get_usb_devices($conf, $bootorder, $machine_version);
     push @$devices, @usbdevices if @usbdevices;
 
-    # the VT220 SCLP console on s390x, where the firmware prints its messages
+    # the SCLP consoles of s390x, which ones depends on the OS type
     if ($arch eq 's390x') {
-        my $socket = "/var/run/qemu-server/${vmid}.sclp";
-        push @$devices, '-chardev', "socket,id=sclp,path=$socket,server=on,wait=off";
-        push @$devices, '-device', 'sclpconsole,chardev=sclp';
+        for my $console (PVE::QemuServer::Helpers::get_s390x_consoles($conf)->@*) {
+            my $socket = PVE::QemuServer::Helpers::console_socket($vmid, $console);
+            if ($console eq 'sclp') {
+                push @$devices, '-chardev', "socket,id=sclp,path=$socket,server=on,wait=off";
+                push @$devices, '-device', 'sclpconsole,chardev=sclp';
+            } elsif ($console eq 'sclplm') {
+                push @$devices, '-chardev', "socket,id=sclplm,path=$socket,server=on,wait=off";
+                # no echo, the client edits the line and only sends it on Enter
+                push @$devices, '-device', 'sclplmconsole,chardev=sclplm,echo=off';
+            } elsif ($console eq '3270') {
+                # not part of upstream QEMU, but of QEMU builds with mainframe support
+                if (!PVE::QemuServer::Helpers::kvm_device_types($kvm_binary)->{sclp3270console}) {
+                    log_warn("the installed QEMU has no integrated 3270 console (sclp3270console)");
+                    next;
+                }
+                push @$devices, '-chardev',
+                    "socket,id=sclp3270,path=$socket,server=on,wait=off,tn3270=on";
+                push @$devices, '-device', 'sclp3270console,chardev=sclp3270';
+            }
+        }
     }
 
     # serial devices
@@ -3375,11 +3394,8 @@ sub config_to_command {
             # the device has a fixed slot on the hardware...
             if ($arch eq 'aarch64' && $i == 0) {
                 push @$devices, '-serial', "chardev:serial$i";
-            } elsif ($arch eq 's390x' && $i == 0) {
-                # s390x has no ISA bus, serial0 is the SCLP line-mode console (ttyS0 in Linux)
-                push @$devices, '-device', "sclplmconsole,chardev=serial$i";
             } elsif ($arch eq 's390x') {
-                # and the others are virtio consoles (hvc0 and up in Linux)
+                # s390x has no ISA bus, serial ports are virtio consoles (hvc0 and up in Linux)
                 push @$devices, '-device',
                     'virtio-serial,id=virtioserial0' . print_pci_addr('virtioserial0', $arch)
                     if !$s390x_console_bus++;
