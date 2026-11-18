@@ -1905,7 +1905,14 @@ __PACKAGE__->register_method({
                     );
                     $conf->{$_} = $created_opts->{$_} for keys $created_opts->%*;
 
-                    PVE::QemuServer::CCW::check_devno_conflicts($conf) if $arch eq 's390x';
+                    if ($arch eq 's390x') {
+                        for my $key (sort grep { m/^net\d+$/ } keys $conf->%*) {
+                            $conf->{$key} = PVE::QemuServer::Network::assign_qeth_devno(
+                                $conf, $key, $conf->{$key},
+                            );
+                        }
+                        PVE::QemuServer::CCW::check_devno_conflicts($conf);
+                    }
 
                     if (!$conf->{boot}) {
                         my $devs = PVE::QemuServer::get_default_bootdevices($conf);
@@ -3138,6 +3145,9 @@ my $update_vm_api = sub {
                         { $opt => $conf->{$opt} },
                     );
                 }
+                $param->{$opt} =
+                    PVE::QemuServer::Network::assign_qeth_devno($conf, $opt, $param->{$opt})
+                    if $arch eq 's390x';
                 $conf->{pending}->{$opt} = $param->{$opt};
             } elsif ($opt eq 'netboot') {
                 my ($netboot, $cmdline) = fetch_netboot($storecfg, $param->{$opt});
@@ -3215,7 +3225,8 @@ my $update_vm_api = sub {
                     );
                 }
             }
-            if ($arch eq 's390x' && ($conf->{pending}->{$opt} // '') =~ m/(?:^|,)devno=/) {
+            # the CCW devices with a device number (a 3270 terminal has it as default key)
+            if ($arch eq 's390x' && $opt =~ m/^(?:net|fba|ckd|tape|terminal)\d+$/) {
                 PVE::QemuServer::CCW::check_devno_conflicts(
                     $conf,
                     0,

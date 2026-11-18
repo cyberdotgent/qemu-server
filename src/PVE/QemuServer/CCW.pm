@@ -188,12 +188,12 @@ sub get_devno_users {
 
     my $values = {};
     for my $key (keys %$conf) {
-        next if ref($conf->{$key});
+        next if ref($conf->{$key}) || !defined($conf->{$key});
         $values->{$key} = $conf->{$key};
     }
     if (!$current_only && (my $pending = $conf->{pending})) {
         for my $key (keys %$pending) {
-            next if $key eq 'delete' || ref($pending->{$key});
+            next if $key eq 'delete' || ref($pending->{$key}) || !defined($pending->{$key});
             $values->{$key} = $pending->{$key};
         }
         for my $key (PVE::Tools::split_list($pending->{delete} // '')) {

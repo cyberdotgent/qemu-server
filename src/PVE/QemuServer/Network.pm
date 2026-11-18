@@ -124,8 +124,9 @@ my $net_fmt = {
         format_description => 'devno',
         description =>
             "s390x: the device number of the adapter as the guest sees it, for example"
-            . " '0.0.0400' (qeth only, required there). A qeth adapter uses three consecutive"
-            . " device numbers, for its read, write and data devices, starting with this one.",
+            . " '0.0.0400' (qeth only; the next free one if not set). A qeth adapter uses three"
+            . " consecutive device numbers, for its read, write and data devices, starting with"
+            . " this one.",
         optional => 1,
     },
     'host-tunnel' => {
@@ -278,6 +279,26 @@ sub print_net {
     my $net = shift;
 
     return PVE::JSONSchema::print_property_string($net, $net_fmt);
+}
+
+# The value of network device '$key' of an s390x VM, with a device number if it is a qeth adapter
+# without one: the one the device has already, as a qeth adapter, or the next free one.
+sub assign_qeth_devno {
+    my ($conf, $key, $value) = @_;
+
+    my $net = parse_property_string($net_fmt, $value);
+    return $value if $net->{model} ne 'qeth' || defined($net->{devno});
+
+    for my $old (($conf->{pending} // {})->{$key}, $conf->{$key}) {
+        next if !defined($old);
+        my $old_net = eval { parse_property_string($net_fmt, $old) } or next;
+        next if $old_net->{model} ne 'qeth' || !defined($old_net->{devno});
+        $net->{devno} = $old_net->{devno};
+        last;
+    }
+    $net->{devno} //= PVE::QemuServer::CCW::next_free_devno($conf, 'qeth', [], $key);
+
+    return print_net($net);
 }
 
 sub add_random_macs {

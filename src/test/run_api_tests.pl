@@ -343,6 +343,78 @@ subtest 'status' => sub {
     $qemu_server_module->unmock('vmstatus');
 };
 
+subtest 's390x: qeth adapters without a device number get one' => sub {
+    my $stored;
+
+    $qemu_config_module->mock(
+        load_config => sub { return dclone($stored); },
+        lock_config => sub {
+            my ($class, $vmid, $code, @param) = @_;
+            return $code->(@param);
+        },
+        write_config => sub {
+            my ($class, $vmid, $conf) = @_;
+            $stored = dclone($conf);
+        },
+    );
+    my $qemu_server_module = Test::MockModule->new('PVE::QemuServer');
+    $qemu_server_module->mock(check_running => sub { return 1; }); # changes stay pending
+    $qemu_server_module->mock(vmconfig_hotplug_pending => sub { return; });
+
+    $stored = {
+        arch => 's390x',
+        ostype => 'other',
+        net0 => 'qeth=BC:24:11:00:00:01,bridge=vmbr0,devno=0.0.0400',
+        terminal0 => '0.0.0404',
+        pending => {},
+        snapshots => {},
+    };
+
+    PVE::API2::Qemu->update_vm({
+        node => 'localhost',
+        vmid => 100,
+        net1 => 'qeth=BC:24:11:00:00:02,bridge=vmbr0',
+    });
+    is(
+        $stored->{pending}->{net1},
+        'qeth=BC:24:11:00:00:02,bridge=vmbr0,devno=0.0.0408',
+        'new qeth adapter gets the next free device number',
+    );
+
+    PVE::API2::Qemu->update_vm({
+        node => 'localhost',
+        vmid => 100,
+        net0 => 'qeth=BC:24:11:00:00:01,bridge=vmbr1',
+    });
+    is(
+        $stored->{pending}->{net0},
+        'qeth=BC:24:11:00:00:01,bridge=vmbr1,devno=0.0.0400',
+        'changed qeth adapter keeps its device number',
+    );
+
+    PVE::API2::Qemu->update_vm({
+        node => 'localhost',
+        vmid => 100,
+        net0 => 'qeth=BC:24:11:00:00:01,bridge=vmbr0,devno=0.0.0480',
+    });
+    is(
+        $stored->{pending}->{net0},
+        'qeth=BC:24:11:00:00:01,bridge=vmbr0,devno=0.0.0480',
+        'device number change of a qeth adapter is a pending change',
+    );
+
+    eval {
+        PVE::API2::Qemu->update_vm({
+            node => 'localhost',
+            vmid => 100,
+            terminal0 => '0.0.0480',
+        });
+    };
+    like($@, qr/device number 0\.0\.0480 is already used by net0/, 'devno conflict refused');
+
+    mock_unreachable_config();
+};
+
 subtest 's390x: adding DASDs to an existing VM' => sub {
     my $stored;
     my $freed = [];

@@ -7,6 +7,7 @@ use lib qw(..);
 use Test::More;
 
 use PVE::QemuServer::CCW;
+use PVE::QemuServer::Network;
 
 my $parse_tests = [
     ['0.0.0200', [0, 0x200]],
@@ -192,5 +193,52 @@ like(
     qr/^terminal0: device number 0\.0\.0702 is already used by net0/,
     'a qeth adapter uses three device numbers',
 );
+
+# qeth adapters without a device number get one when they are created or changed
+{
+    my $assign = sub { PVE::QemuServer::Network::assign_qeth_devno(@_) };
+    is(
+        $assign->($qeth_terminal_conf, 'net3', $qeth_terminal_conf->{net3}),
+        'qeth=BC:24:11:00:00:03,bridge=vmbr0,devno=0.0.0408',
+        'qeth adapter without a device number gets the next free one',
+    );
+    is(
+        $assign->(
+            $qeth_terminal_conf, 'net0', 'qeth=BC:24:11:00:00:01,bridge=vmbr1',
+        ),
+        'qeth=BC:24:11:00:00:01,bridge=vmbr1,devno=0.0.0400',
+        'a changed qeth adapter keeps its device number',
+    );
+    is(
+        $assign->($qeth_terminal_conf, 'net1', 'qeth=BC:24:11:00:00:02,bridge=vmbr0'),
+        'qeth=BC:24:11:00:00:02,bridge=vmbr0,devno=0.0.0408',
+        'a VirtIO adapter changed to qeth gets the next free one',
+    );
+    is(
+        $assign->({}, 'net0', 'virtio=BC:24:11:00:00:02,bridge=vmbr0'),
+        'virtio=BC:24:11:00:00:02,bridge=vmbr0',
+        'VirtIO adapters are left alone',
+    );
+    is(
+        $assign->({}, 'net0', 'qeth=BC:24:11:00:00:02,bridge=vmbr0,devno=0.0.0480'),
+        'qeth=BC:24:11:00:00:02,bridge=vmbr0,devno=0.0.0480',
+        'a configured device number is kept',
+    );
+
+    # as on VM creation: the config is the new VM's parameters
+    my $new = {
+        net0 => 'qeth=BC:24:11:00:00:01,bridge=vmbr0',
+        net1 => 'qeth=BC:24:11:00:00:02,bridge=vmbr0',
+        net2 => 'qeth=BC:24:11:00:00:03,bridge=vmbr0,devno=0.0.0404',
+    };
+    $new->{$_} = $assign->($new, $_, $new->{$_}) for sort keys $new->%*;
+    is_deeply(
+        [map { $new->{$_} =~ m/devno=([^,]+)/ ? $1 : undef } sort keys $new->%*],
+        ['0.0.0400', '0.0.0408', '0.0.0404'],
+        'new VM: qeth adapters get distinct device numbers around configured ones',
+    );
+    eval { PVE::QemuServer::CCW::check_devno_conflicts($new) };
+    is($@, '', 'new VM: no conflicts');
+}
 
 done_testing();
