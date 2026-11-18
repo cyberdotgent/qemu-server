@@ -67,7 +67,7 @@ sub kvm_user_version {
 
     my $code = sub {
         my $line = shift;
-        if ($line =~ m/^QEMU( PC)? emulator version (\d+\.\d+(\.\d+)?)(\.\d+)?[,\s]/) {
+        if ($line =~ m/^QEMU(?:-mod)?( PC)? emulator version (\d+\.\d+(\.\d+)?)(\.\d+)?[,\s]/) {
             $kvm_user_version->{$binary} = $2;
         }
     };
