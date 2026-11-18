@@ -12,6 +12,7 @@ use PVE::Mapping::PCI;
 use PVE::Mapping::USB;
 
 use PVE::QemuServer::Monitor qw(mon_cmd);
+use PVE::QemuServer::Network;
 use PVE::QemuServer::Virtiofs;
 
 sub check_non_migratable_resources {
@@ -24,6 +25,11 @@ sub check_non_migratable_resources {
         push @blockers, "virtiofs" if PVE::QemuServer::Virtiofs::virtiofs_enabled($conf);
         # the eckd-ccw device of QEMU-mod has no migration state yet
         push @blockers, grep { m/^ckd\d+$/ && $conf->{$_} } sort keys %$conf;
+        # the qeth-ccw device of QEMU builds with mainframe support cannot be migrated
+        for my $opt (sort grep { m/^net\d+$/ } keys %$conf) {
+            my $net = eval { PVE::QemuServer::Network::parse_net($conf->{$opt}, 1) } or next;
+            push @blockers, "$opt (qeth)" if $net->{model} eq 'qeth';
+        }
     }
 
     if (scalar(@blockers) && !$noerr) {

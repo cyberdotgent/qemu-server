@@ -60,6 +60,7 @@ use PVE::QemuServer::BlockJob;
 use PVE::QemuServer::Cfg2Cmd;
 use PVE::QemuServer::Helpers
     qw(config_aware_timeout get_iscsi_initiator_name get_host_arch min_version kvm_user_version windows_version);
+use PVE::QemuServer::CCW;
 use PVE::QemuServer::Cloudinit;
 use PVE::QemuServer::CGroup;
 use PVE::QemuServer::CCW;
@@ -1332,15 +1333,25 @@ sub print_netdevice_full {
         $host_mtu_migration, # force this value for host_mtu, 0 means force absence of param
     ) = @_;
 
-    die "netdev $netid: only VirtIO NICs are supported on s390x\n"
-        if $arch eq 's390x' && $net->{model} ne 'virtio';
+    die "netdev $netid: only VirtIO and qeth NICs are supported on s390x\n"
+        if $arch eq 's390x' && $net->{model} !~ m/^(?:virtio|qeth)$/;
+    die "netdev $netid: qeth NICs are only supported on s390x\n"
+        if $arch ne 's390x' && $net->{model} eq 'qeth';
 
     my $device = $net->{model};
     if ($net->{model} eq 'virtio') {
         $device = $arch eq 's390x' ? 'virtio-net-ccw' : 'virtio-net-pci';
     }
 
-    my $pciaddr = print_pci_addr("$netid", $arch);
+    my $pciaddr;
+    if ($net->{model} eq 'qeth') {
+        # an OSA-Express adapter on three consecutive CCW devices, starting at its devno
+        die "netdev $netid: a qeth NIC needs a device number (devno)\n" if !$net->{devno};
+        $device = 'qeth-ccw';
+        $pciaddr = ',devno=' . PVE::QemuServer::CCW::qemu_devno($net->{devno});
+    } else {
+        $pciaddr = print_pci_addr("$netid", $arch);
+    }
     my $tmpstr = "$device,mac=$net->{macaddr},netdev=$netid$pciaddr,id=$netid";
     if ($net->{queues} && $net->{queues} > 1 && $net->{model} eq 'virtio') {
         # Consider we have N queues, the number of vectors needed is 2 * N + 2, i.e., one per in
@@ -1357,7 +1368,8 @@ sub print_netdevice_full {
         $tmpstr .= ",rx_queue_size=1024,tx_queue_size=256";
     }
 
-    $tmpstr .= ",bootindex=$net->{bootindex}" if $net->{bootindex};
+    # qeth adapters have no bootindex, the s390-ccw firmware cannot boot from them
+    $tmpstr .= ",bootindex=$net->{bootindex}" if $net->{bootindex} && $net->{model} ne 'qeth';
     $tmpstr .= ",loadparm=$net->{loadparm}" if defined($net->{loadparm}); # s390x IPL device
 
     my $mtu = $net->{mtu};
@@ -3958,6 +3970,12 @@ sub config_to_command {
 
         $d->{bootindex} = $bootorder->{$netname} if $bootorder->{$netname};
         $d->{loadparm} = $ipl_loadparm->{$netname} if defined($ipl_loadparm->{$netname});
+
+        # not part of upstream QEMU, but of QEMU builds with mainframe support
+        die "$netname: the installed QEMU has no qeth network adapter (qeth-ccw)\n"
+            if $arch eq 's390x'
+            && $d->{model} eq 'qeth'
+            && !PVE::QemuServer::Helpers::kvm_device_types($kvm_binary)->{'qeth-ccw'};
 
         my $netdevfull = print_netdev_full($vmid, $conf, $arch, $d, $netname);
         push @$devices, '-netdev', $netdevfull;

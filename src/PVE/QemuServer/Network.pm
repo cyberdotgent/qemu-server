@@ -11,6 +11,7 @@ use PVE::Network::SDN::Zones;
 use PVE::RESTEnvironment qw(log_warn);
 use PVE::Tools qw($IPV6RE file_read_firstline);
 
+use PVE::QemuServer::CCW;
 use PVE::QemuServer::Monitor qw(mon_cmd);
 
 my $nic_model_list = [
@@ -25,6 +26,7 @@ my $nic_model_list = [
     'ne2k_isa',
     'ne2k_pci',
     'pcnet',
+    'qeth',
     'rtl8139',
     'virtio',
     'vmxnet3',
@@ -114,6 +116,16 @@ my $net_fmt = {
         maximum => 65520,
         description =>
             "Force MTU of network device (VirtIO only). Setting to '1' or empty will use the bridge MTU",
+        optional => 1,
+    },
+    devno => {
+        type => 'string',
+        format => 'pve-qm-ccw-devno',
+        format_description => 'devno',
+        description =>
+            "s390x: the device number of the adapter as the guest sees it, for example"
+            . " '0.0.0400' (qeth only, required there). A qeth adapter uses three consecutive"
+            . " device numbers, for its read, write and data devices, starting with this one.",
         optional => 1,
     },
     'host-tunnel' => {

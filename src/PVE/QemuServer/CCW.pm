@@ -62,6 +62,15 @@ my $devno_users = [
             return ('tape', devno_property($value) // print_devno(0, 0x0580 + $index));
         },
     ],
+    [
+        qr/^net\d+$/,
+        sub {
+            my ($key, $value) = @_;
+            # the model is the default key, 'qeth=<mac>' or 'model=qeth'
+            return if $value !~ m/(?:^|,)(?:model=)?qeth(?:[=,]|$)/;
+            return ('qeth', devno_property($value));
+        },
+    ],
 ];
 
 =head3 register_devno_user($key_re, $code)

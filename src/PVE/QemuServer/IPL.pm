@@ -116,16 +116,20 @@ sub get_ipl_devices {
     for my $key (sort keys %$conf) {
         next if $key !~ m/^net\d+$/;
         my $net = eval { PVE::QemuServer::Network::parse_net($conf->{$key}) } or next;
-        next if $net->{model} ne 'virtio';
+        my $entry;
+        if ($net->{model} eq 'virtio') {
+            $entry = { type => 'virtio-net-ccw', devno => virtio_devno($key) };
+        } elsif ($net->{model} eq 'qeth' && $net->{devno}) {
+            $entry = {
+                type => 'qeth-ccw',
+                devno => PVE::QemuServer::CCW::qemu_devno($net->{devno}),
+            };
+        } else {
+            next;
+        }
         my $description = "network device $net->{macaddr}";
         $description .= ", bridge $net->{bridge}" if $net->{bridge};
-        push @$res,
-            {
-                key => $key,
-                type => 'virtio-net-ccw',
-                devno => virtio_devno($key),
-                description => $description,
-            };
+        push @$res, { $entry->%*, key => $key, description => $description };
     }
 
     my %types = map { $_->{type} => 1 } @$res;

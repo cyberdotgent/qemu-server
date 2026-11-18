@@ -59,6 +59,7 @@ my $conf = {
     ide0 => 'local:8006/vm-8006-disk-8.qcow2,size=8G',
     net0 => 'virtio=BC:24:11:00:00:00,bridge=vmbr0',
     net1 => 'e1000=BC:24:11:00:00:01,bridge=vmbr0',
+    net2 => 'qeth=BC:24:11:00:00:02,bridge=vmbr0,devno=0.0.0400',
     scsi0 => 'local:8006/vm-8006-disk-1.qcow2,size=8G',
     scsi1 => 'local:iso/mf-install.iso,media=cdrom',
     scsi2 => 'local:8006/vm-8006-cloudinit.qcow2,media=cdrom',
@@ -98,7 +99,8 @@ is_deeply(
             description => 'disk local:8006/vm-8006-disk-0.qcow2',
         },
     ],
-    'IPL devices: virtio and SCSI disks and CD-ROMs, virtio NICs; no cloud-init, EFI, IDE or e1000',
+    'IPL devices: virtio and SCSI disks and CD-ROMs, virtio NICs; no cloud-init, EFI, IDE, e1000'
+        . ' or qeth (QEMU-mod cannot IPL from qeth)',
 );
 
 is_deeply(
@@ -137,6 +139,23 @@ is_deeply(
     ],
     'IPL devices: tape drives, also empty ones; virtio SCSI controller by default',
 );
+
+{
+    local $qemu_mod_ipl_methods->{'qeth-ccw'} = 'ccw';
+    my ($qeth) = grep { $_->{key} eq 'net2' }
+        PVE::QemuServer::IPL::get_ipl_devices($conf, undef, '/usr/bin/kvm')->@*;
+    is_deeply(
+        $qeth,
+        {
+            key => 'net2',
+            type => 'qeth-ccw',
+            'ipl-method' => 'ccw',
+            devno => 'fe.0.0400',
+            description => 'network device BC:24:11:00:00:02, bridge vmbr0',
+        },
+        'a qeth adapter is an IPL device at its configured device number if QEMU can IPL from it',
+    );
+}
 
 ok(
     PVE::QemuServer::IPL::ipl_with_bootindex({ 'ipl-method' => 'firmware' }),
