@@ -1474,10 +1474,17 @@ my $vga_map_aarch64 = {
     'virtio-gl' => 'virtio-gpu-gl',
 };
 
+# s390x has no VGA, only the CCW variant of the virtio GPU
+my $vga_map_s390x = {
+    'virtio' => 'virtio-gpu-ccw',
+};
+
 my sub map_vga_model {
     my ($vga_type, $arch) = @_;
 
-    return $arch eq 'aarch64' ? $vga_map_aarch64->{$vga_type} : $vga_map->{$vga_type};
+    return $vga_map_aarch64->{$vga_type} if $arch eq 'aarch64';
+    return $vga_map_s390x->{$vga_type} if $arch eq 's390x';
+    return $vga_map->{$vga_type};
 }
 
 sub print_vga_device {
@@ -3101,9 +3108,13 @@ my sub get_vga_properties {
     my $qxlnum = vga_conf_has_spice($conf->{vga});
     $vga->{type} = 'qxl' if $qxlnum;
 
+    die "SPICE is not supported on s390x\n" if $qxlnum && $arch eq 's390x';
+
     if (!$vga->{type}) {
         if ($arch eq 'aarch64') {
             $vga->{type} = 'virtio';
+        } elsif ($arch eq 's390x') {
+            $vga->{type} = 'serial0'; # the SCLP console
         } elsif (min_version($machine_version, 2, 9)) {
             $vga->{type} = (!$winversion || $winversion >= 6) ? 'std' : 'cirrus';
         } else {
@@ -3346,6 +3357,7 @@ sub config_to_command {
     push @$devices, @usbdevices if @usbdevices;
 
     # serial devices
+    my $s390x_console_bus = 0;
     for (my $i = 0; $i < $MAX_SERIAL_PORTS; $i++) {
         my $path = $conf->{"serial$i"} or next;
         if ($path eq 'socket') {
@@ -3356,10 +3368,20 @@ sub config_to_command {
             # the device has a fixed slot on the hardware...
             if ($arch eq 'aarch64' && $i == 0) {
                 push @$devices, '-serial', "chardev:serial$i";
+            } elsif ($arch eq 's390x' && $i == 0) {
+                # s390x has no ISA bus, serial0 is the SCLP line-mode console (ttyS0 in Linux)
+                push @$devices, '-device', "sclplmconsole,chardev=serial$i";
+            } elsif ($arch eq 's390x') {
+                # and the others are virtio consoles (hvc0 and up in Linux)
+                push @$devices, '-device',
+                    'virtio-serial,id=virtioserial0' . print_pci_addr('virtioserial0', $arch)
+                    if !$s390x_console_bus++;
+                push @$devices, '-device', "virtconsole,chardev=serial$i,bus=virtioserial0.0";
             } else {
                 push @$devices, '-device', "isa-serial,chardev=serial$i";
             }
         } else {
+            die "serial device passthrough is not supported on s390x\n" if $arch eq 's390x';
             die "no such serial device\n" if !-c $path;
             push @$devices, '-chardev', "serial,id=serial$i,path=$path";
             push @$devices, '-device', "isa-serial,chardev=serial$i";
@@ -3503,7 +3525,7 @@ sub config_to_command {
     my $spice_port;
 
     assert_clipboard_config($vga);
-    my $is_spice = $qxlnum || $vga->{type} =~ /^virtio/;
+    my $is_spice = $arch ne 's390x' && ($qxlnum || $vga->{type} =~ /^virtio/);
 
     if ($is_spice || ($vga->{'clipboard'} && $vga->{'clipboard'} eq 'vnc')) {
         if ($qxlnum > 1) {
