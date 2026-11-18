@@ -38,6 +38,7 @@ use PVE::QemuServer::BlockJob;
 use PVE::QemuServer::CCW;
 use PVE::QemuServer::Cloudinit;
 use PVE::QemuServer::CPUConfig;
+use PVE::QemuServer::DASD;
 use PVE::QemuServer::Drive qw(
     checked_volume_format
     checked_parse_volname
@@ -575,6 +576,72 @@ my sub create_disks : prototype($$$$$$$$$$$) {
 
     my $live_import_mapping = {};
 
+    # The device number of a DASD: as given, the one it has already, or the next free one.
+    my $assign_dasd_devno = sub {
+        my ($ds, $disk) = @_;
+
+        if (!defined($disk->{devno})) {
+            for my $old (($conf->{pending} // {})->{$ds}, $conf->{$ds}) {
+                next if !defined($old);
+                my $old_drive = PVE::QemuServer::Drive::parse_drive($ds, $old) or next;
+                $disk->{devno} = $old_drive->{devno};
+                last;
+            }
+        }
+        my $override = { %$res, $ds => undef };
+        if (defined($disk->{devno})) {
+            $disk->{devno} = PVE::QemuServer::CCW::normalize_devno($disk->{devno});
+        } else {
+            $disk->{devno} = PVE::QemuServer::CCW::next_free_devno(
+                $conf, $disk->{interface}, [], $ds, $override,
+            );
+        }
+        $override->{$ds} = "devno=$disk->{devno}";
+        PVE::QemuServer::CCW::check_devno_conflicts($conf, 0, $override);
+    };
+
+    my $check_dasd_import_source = sub {
+        my ($ds, $path, $format, $size) = @_;
+
+        die "$ds: could not get the size of '$path'\n" if !$size;
+        if ($ds =~ m/^ckd/) {
+            PVE::QemuServer::DASD::check_ckd_import_source($path, $format, $size);
+        } else {
+            PVE::QemuServer::DASD::check_fba_import_source($path, $format, $size);
+        }
+    };
+
+    my $finish_dasd_import = sub {
+        my ($ds, $disk, $volid) = @_;
+
+        return if $ds !~ m/^ckd/;
+        my $header = PVE::QemuServer::DASD::check_ckd_volume($storecfg, $volid);
+        $disk->{cylinders} = $header->{cylinders};
+    };
+
+    # An existing volume attached as DASD. Unless it is the volume the drive has already, check it
+    # (and complete the CKD header).
+    my $check_dasd_volume = sub {
+        my ($ds, $disk, $size) = @_;
+
+        for my $old (($conf->{pending} // {})->{$ds}, $conf->{$ds}) {
+            next if !defined($old);
+            my $old_drive = PVE::QemuServer::Drive::parse_drive($ds, $old) or next;
+            next if $old_drive->{file} ne $disk->{file};
+            $disk->{cylinders} //= $old_drive->{cylinders} if $ds =~ m/^ckd/;
+            return;
+        }
+
+        if ($ds =~ m/^ckd/) {
+            my $header = PVE::QemuServer::DASD::check_ckd_volume($storecfg, $disk->{file});
+            $disk->{cylinders} = $header->{cylinders};
+        } else {
+            die "$ds: the size of an FBA volume must be a multiple of 512 bytes\n"
+                if $size % 512;
+            PVE::QemuServer::DASD::check_fba_size($size);
+        }
+    };
+
     my $code = sub {
         my ($ds, $disk) = @_;
 
@@ -583,6 +650,19 @@ my sub create_disks : prototype($$$$$$$$$$$) {
 
         my $volid = $disk->{file};
         my ($storeid, $volname) = PVE::Storage::parse_volume_id($volid, 1);
+
+        my $dasd = PVE::QemuServer::Drive::drive_is_dasd($disk) ? $disk->{interface} : undef;
+        if ($dasd) {
+            die "$ds: DASDs are only supported on s390x\n" if $arch ne 's390x';
+            die "$ds: a DASD needs a volume\n"
+                if !$volid || $volid eq 'none' || $volid eq 'cdrom';
+            my $cloudinit = defined($volname) && $volname eq 'cloudinit'
+                || PVE::QemuServer::Drive::drive_is_cloudinit($disk);
+            die "$ds: a cloud-init drive must be an FBA DASD\n" if $cloudinit && $dasd ne 'fba';
+            die "$ds: only a cloud-init drive can be a CD-ROM\n"
+                if PVE::QemuServer::drive_is_cdrom($disk) && !$cloudinit;
+            $assign_dasd_devno->($ds, $disk);
+        }
 
         if (!$volid || $volid eq 'none' || $volid eq 'cdrom') {
             delete $disk->{size};
@@ -622,6 +702,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
             $disk->{media} = 'cdrom';
             push @$vollist, $volid;
             delete $disk->{format}; # no longer needed
+            delete $disk->@{qw(name model)};
             $res->{$ds} = PVE::QemuServer::print_drive($disk);
             print "$ds: successfully created disk '$res->{$ds}'\n";
         } elsif ($volid =~ $PVE::QemuServer::Drive::NEW_DISK_RE) {
@@ -629,6 +710,16 @@ my sub create_disks : prototype($$$$$$$$$$$) {
             die "no storage ID specified (and no default storage)\n" if !$storeid;
 
             $size = PVE::Tools::convert_size($size, 'gb' => 'kb'); # vdisk_alloc uses kb
+
+            my $ckd_cylinders;
+            if ($dasd && !$disk->{'import-from'}) {
+                if ($dasd eq 'ckd') {
+                    $ckd_cylinders = PVE::QemuServer::DASD::ckd_cylinders_of_drive($disk);
+                    $size = PVE::QemuServer::DASD::ckd_alloc_size_kib($ckd_cylinders);
+                } else {
+                    PVE::QemuServer::DASD::check_fba_size($size * 1024);
+                }
+            }
 
             my $live_import = $is_live_import && $ds ne 'efidisk0';
             my $needs_creation = 1;
@@ -661,6 +752,16 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                         die
                             "importing from extracted images with backing file ($parent) not allowed\n"
                             if $parent;
+                    }
+
+                    if ($dasd) {
+                        die "$ds: live import is not supported for DASDs\n" if $live_import;
+                        $check_dasd_import_source->(
+                            $ds,
+                            PVE::Storage::path($storecfg, $source),
+                            $source_format,
+                            PVE::Storage::volume_size_info($storecfg, $source),
+                        );
                     }
 
                     if ($live_import && $ds ne 'efidisk0') {
@@ -697,6 +798,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                         eval {
                             ($dst_volid, $size) =
                                 $import_from_volid->($storecfg, $source, $dest_info, $vollist);
+                            $finish_dasd_import->($ds, $disk, $dst_volid) if $dasd;
 
                             # remove extracted volumes after importing
                             if ($needs_extraction) {
@@ -713,6 +815,11 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                     ($size, my $source_format) =
                         PVE::Storage::file_size_info($source, undef, 'auto-detect', 1);
                     die "could not get file size of $source\n" if !$size;
+
+                    if ($dasd) {
+                        die "$ds: live import is not supported for DASDs\n" if $live_import;
+                        $check_dasd_import_source->($ds, $source, $source_format, $size);
+                    }
 
                     if ($live_import && $ds ne 'efidisk0') {
                         $live_import_mapping->{$ds} = {
@@ -733,6 +840,8 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                             },
                         );
 
+                        $finish_dasd_import->($ds, $disk, $dst_volid) if $dasd;
+
                         # change imported disk to a base volume in case the VM is a template
                         $dst_volid = PVE::Storage::vdisk_create_base($storecfg, $dst_volid)
                             if PVE::QemuConfig->is_template($conf);
@@ -747,6 +856,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                     $disk->{file} = $dst_volid;
                     $disk->{size} = $size;
                     delete $disk->{format}; # no longer needed
+                    delete $disk->@{qw(name model)};
                     $res->{$ds} = PVE::QemuServer::print_drive($disk);
                 }
             }
@@ -780,6 +890,20 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                     $size = PVE::Tools::convert_size(
                         get_tpmstate_size($volid, $storecfg), 'b' => 'kb',
                     );
+                } elsif ($dasd) {
+                    my $name = PVE::QemuServer::DASD::dasd_volume_name(
+                        $storecfg, $storeid, $vmid, $fmt, $disk->{name},
+                    );
+                    $volid =
+                        PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, $fmt, $name, $size);
+                    push @$vollist, $volid;
+                    if ($ckd_cylinders) {
+                        PVE::QemuServer::DASD::init_ckd_volume(
+                            $storecfg, $volid, $ckd_cylinders,
+                        );
+                        $disk->{cylinders} = $ckd_cylinders;
+                    }
+                    @$vollist = grep { $_ ne $volid } @$vollist;
                 } else {
                     $volid =
                         PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, $fmt, undef, $size);
@@ -793,6 +917,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                 $disk->{file} = $volid;
                 $disk->{size} = PVE::Tools::convert_size($size, 'kb' => 'b');
                 delete $disk->{format}; # no longer needed
+                delete $disk->@{qw(name model)};
                 $res->{$ds} = PVE::QemuServer::print_drive($disk);
             }
 
@@ -829,6 +954,9 @@ my sub create_disks : prototype($$$$$$$$$$$) {
             my $size = PVE::Storage::volume_size_info($storecfg, $volid);
             die "volume $volid does not exist\n" if !$size;
             $disk->{size} = $size;
+
+            $check_dasd_volume->($ds, $disk, $size) if $dasd;
+            delete $disk->@{qw(name model)};
 
             $res->{$ds} = PVE::QemuServer::print_drive($disk);
         }
@@ -1768,6 +1896,8 @@ __PACKAGE__->register_method({
                         $extraction_storage,
                     );
                     $conf->{$_} = $created_opts->{$_} for keys $created_opts->%*;
+
+                    PVE::QemuServer::CCW::check_devno_conflicts($conf) if $arch eq 's390x';
 
                     if (!$conf->{boot}) {
                         my $devs = PVE::QemuServer::get_default_bootdevices($conf);
@@ -3076,6 +3206,13 @@ my $update_vm_api = sub {
                         $get_config_with_pending->($conf), $storecfg,
                     );
                 }
+            }
+            if ($arch eq 's390x' && ($conf->{pending}->{$opt} // '') =~ m/(?:^|,)devno=/) {
+                PVE::QemuServer::CCW::check_devno_conflicts(
+                    $conf,
+                    0,
+                    { $opt => $conf->{pending}->{$opt} },
+                );
             }
             PVE::QemuConfig->remove_from_pending_delete($conf, $opt);
             PVE::QemuConfig->write_config($vmid, $conf);
@@ -6635,6 +6772,7 @@ __PACKAGE__->register_method({
                     $newsize = $newsize * 1024 * 1024 * 1024 * 1024;
                 }
             }
+            my $increment = $ext ? int($newsize) : undef;
             $newsize += $size if $ext;
             $newsize = int($newsize);
 
@@ -6648,9 +6786,24 @@ __PACKAGE__->register_method({
                 "update VM $vmid: resize --disk $disk --size $sizestr",
             );
 
-            PVE::QemuServer::Blockdev::resize(
-                $vmid, "drive-$disk", $storecfg, $volid, $newsize,
-            );
+            if ($drive->{interface} eq 'ckd') {
+                # the header holds the size, rewriting it needs exclusive access to the volume
+                die "a CKD volume can only be resized while the VM is not running\n"
+                    if PVE::QemuServer::Helpers::vm_running_locally($vmid);
+                ($newsize, my $cylinders) = PVE::QemuServer::DASD::resize_ckd_volume(
+                    $storecfg,
+                    $volid,
+                    $newsize,
+                    $increment,
+                );
+                print "$disk: resized to $cylinders cylinders\n";
+                $drive->{cylinders} = $cylinders;
+            } else {
+                PVE::QemuServer::DASD::check_fba_size($newsize) if $drive->{interface} eq 'fba';
+                PVE::QemuServer::Blockdev::resize(
+                    $vmid, "drive-$disk", $storecfg, $volid, $newsize,
+                );
+            }
 
             $drive->{size} = $newsize;
             $conf->{$disk} = PVE::QemuServer::print_drive($drive);

@@ -22,6 +22,8 @@ sub check_non_migratable_resources {
         push @blockers, "amd-sev" if $conf->{"amd-sev"};
         push @blockers, "intel-tdx" if $conf->{"intel-tdx"};
         push @blockers, "virtiofs" if PVE::QemuServer::Virtiofs::virtiofs_enabled($conf);
+        # the eckd-ccw device of QEMU-mod has no migration state yet
+        push @blockers, grep { m/^ckd\d+$/ && $conf->{$_} } sort keys %$conf;
     }
 
     if (scalar(@blockers) && !$noerr) {

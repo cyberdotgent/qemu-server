@@ -11,6 +11,7 @@ SOURCES=Agent.pm	\
 	Cloudinit.pm	\
 	CPUConfig.pm	\
 	CPUFlags.pm	\
+	DASD.pm		\
 	DBusVMState.pm	\
 	Drive.pm	\
 	DriveDevice.pm	\

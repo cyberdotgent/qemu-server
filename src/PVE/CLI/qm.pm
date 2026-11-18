@@ -703,6 +703,23 @@ __PACKAGE__->register_method({
 
         print "importing disk '$source' to VM $vmid ...\n";
 
+        if ($target_disk && $target_disk =~ m/^(?:fba|ckd)\d+$/) {
+            # DASDs need a device number and CKD volumes a complete header, which the API does
+            die "cowardly refusing to overwrite existing entry: $target_disk\n"
+                if $vm_conf->{$target_disk};
+            my $drive = "$storeid:0,import-from=$source";
+            $drive .= ",format=$format" if $format;
+            PVE::API2::Qemu->update_vm({
+                node => $nodename,
+                vmid => $vmid,
+                $target_disk => $drive,
+            });
+            $vm_conf = PVE::QemuConfig->load_config($vmid);
+            my $value = $vm_conf->{pending}->{$target_disk} // $vm_conf->{$target_disk};
+            print "$target_disk: successfully imported disk '$value'\n";
+            return;
+        }
+
         my $size = PVE::Storage::file_size_info($source, undef, 'auto-detect');
         my ($drive_id, $volid) = PVE::QemuServer::ImportDisk::do_import(
             $source,
