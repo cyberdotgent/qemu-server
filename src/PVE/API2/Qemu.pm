@@ -35,6 +35,7 @@ use PVE::QemuServer;
 use PVE::QemuServer::Agent;
 use PVE::QemuServer::Blockdev;
 use PVE::QemuServer::BlockJob;
+use PVE::QemuServer::CCW;
 use PVE::QemuServer::Cloudinit;
 use PVE::QemuServer::CPUConfig;
 use PVE::QemuServer::Drive qw(
@@ -1954,6 +1955,7 @@ __PACKAGE__->register_method({
             { subdir => 'cloudinit' },
             { subdir => 'pending' },
             { subdir => 'ipl-devices' },
+            { subdir => 'ccw-devnos' },
             { subdir => 'status' },
             { subdir => 'unlink' },
             { subdir => 'vncproxy' },
@@ -2270,6 +2272,128 @@ __PACKAGE__->register_method({
         );
 
         return [map { { $_->%{qw(key type devno description)} } } $devices->@*];
+    },
+});
+
+__PACKAGE__->register_method({
+    name => 'ccw_devnos',
+    path => '{vmid}/ccw-devnos',
+    method => 'GET',
+    proxyto => 'node',
+    description => "Get the CCW device numbers used by an s390x VM and a suggestion for a new"
+        . " device. Includes pending changes. For a VM that does not exist yet, nothing is used.",
+    permissions => {
+        check => ['perm', '/vms/{vmid}', ['VM.Audit']],
+    },
+    parameters => {
+        additionalProperties => 0,
+        properties => {
+            node => get_standard_option('pve-node'),
+            vmid =>
+                get_standard_option('pve-vmid', { completion => \&PVE::QemuServer::complete_vmid }),
+            kind => {
+                description => "Suggest the next free device number for a device of this kind.",
+                type => 'string',
+                enum => [grep { $_ ne 'virtio' } PVE::QemuServer::CCW::devno_kinds()->@*],
+                optional => 1,
+            },
+            used => {
+                description => "Further device numbers to treat as used, for example those of"
+                    . " devices not yet saved.",
+                type => 'string',
+                format => 'pve-qm-ccw-devno-list',
+                optional => 1,
+            },
+        },
+    },
+    returns => {
+        type => 'object',
+        properties => {
+            used => {
+                description => "The configured device numbers.",
+                type => 'array',
+                items => {
+                    type => 'object',
+                    properties => {
+                        key => {
+                            description => "Configuration key of the device.",
+                            type => 'string',
+                        },
+                        kind => {
+                            description => "Device kind.",
+                            type => 'string',
+                        },
+                        devno => {
+                            description => "The (first) device number, as the guest sees it.",
+                            type => 'string',
+                        },
+                        count => {
+                            description => "How many consecutive device numbers it uses.",
+                            type => 'integer',
+                        },
+                    },
+                },
+            },
+            ranges => {
+                description => "The default device number range of each device kind,"
+                    . " in subchannel set 0. 'reserved' ranges cannot be used.",
+                type => 'array',
+                items => {
+                    type => 'object',
+                    properties => {
+                        kind => { type => 'string' },
+                        first => { type => 'string' },
+                        last => { type => 'string' },
+                        count => { type => 'integer' },
+                        align => { type => 'integer' },
+                        reserved => { type => 'boolean', optional => 1 },
+                    },
+                },
+            },
+            suggested => {
+                description => "The next free device number for a device of 'kind'.",
+                type => 'string',
+                optional => 1,
+            },
+        },
+    },
+    code => sub {
+        my ($param) = @_;
+
+        my $conf;
+        if (-f PVE::QemuConfig->config_file($param->{vmid})) {
+            $conf = PVE::QemuConfig->load_config($param->{vmid});
+            die "only s390x VMs have CCW devices\n"
+                if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
+        }
+
+        my $used = [];
+        for my $user (PVE::QemuServer::CCW::get_devno_users($conf // {})->@*) {
+            next if !defined($user->{devno});
+            push @$used, { $user->%{qw(key kind devno count)} };
+        }
+
+        my $ranges = [];
+        for my $kind (PVE::QemuServer::CCW::devno_kinds()->@*) {
+            my $info = PVE::QemuServer::CCW::devno_kind_info($kind);
+            push @$ranges,
+                {
+                    kind => $kind,
+                    first => PVE::QemuServer::CCW::print_devno(0, $info->{first}),
+                    last => PVE::QemuServer::CCW::print_devno(0, $info->{last}),
+                    count => $info->{count},
+                    align => $info->{align},
+                    ($info->{reserved} ? (reserved => 1) : ()),
+                };
+        }
+
+        my $res = { used => $used, ranges => $ranges };
+        if (my $kind = $param->{kind}) {
+            my $extra = [PVE::Tools::split_list($param->{used} // '')];
+            $res->{suggested} = PVE::QemuServer::CCW::next_free_devno($conf, $kind, $extra);
+        }
+
+        return $res;
     },
 });
 

@@ -6,6 +6,7 @@ SOURCES=Agent.pm	\
 	Blockdev.pm	\
 	BlockJob.pm	\
 	Cfg2Cmd.pm	\
+	CCW.pm		\
 	CGroup.pm	\
 	Cloudinit.pm	\
 	CPUConfig.pm	\
