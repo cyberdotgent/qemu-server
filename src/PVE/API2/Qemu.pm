@@ -3387,8 +3387,9 @@ __PACKAGE__->register_method({
             serial => {
                 optional => 1,
                 type => 'string',
-                enum => [qw(serial0 serial1 serial2 serial3)],
-                description => "opens a serial terminal (defaults to display)",
+                enum => [qw(serial0 serial1 serial2 serial3 sclp)],
+                description => "opens a serial terminal (defaults to display), 'sclp' is the"
+                    . " firmware console of s390x VMs",
             },
         },
     },

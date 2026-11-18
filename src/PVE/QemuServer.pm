@@ -3356,6 +3356,13 @@ sub config_to_command {
     my @usbdevices = PVE::QemuServer::USB::get_usb_devices($conf, $bootorder, $machine_version);
     push @$devices, @usbdevices if @usbdevices;
 
+    # the VT220 SCLP console on s390x, where the firmware prints its messages
+    if ($arch eq 's390x') {
+        my $socket = "/var/run/qemu-server/${vmid}.sclp";
+        push @$devices, '-chardev', "socket,id=sclp,path=$socket,server=on,wait=off";
+        push @$devices, '-device', 'sclpconsole,chardev=sclp';
+    }
+
     # serial devices
     my $s390x_console_bus = 0;
     for (my $i = 0; $i < $MAX_SERIAL_PORTS; $i++) {

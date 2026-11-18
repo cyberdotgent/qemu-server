@@ -793,10 +793,11 @@ __PACKAGE__->register_method({
             ),
             iface => {
                 description =>
-                    "Select the serial device. By default we simply use the first suitable device.",
+                    "Select the serial device. By default we simply use the first suitable device."
+                    . " 'sclp' is the firmware console of s390x VMs.",
                 type => 'string',
                 optional => 1,
-                enum => [qw(serial0 serial1 serial2 serial3)],
+                enum => [qw(serial0 serial1 serial2 serial3 sclp)],
             },
             escape => {
                 description => "Escape character.",
@@ -834,7 +835,10 @@ __PACKAGE__->register_method({
 
         my $iface = $param->{iface};
 
-        if ($iface) {
+        if ($iface && $iface eq 'sclp') {
+            die "interface 'sclp' only exists for s390x VMs\n"
+                if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
+        } elsif ($iface) {
             die "serial interface '$iface' is not configured\n" if !$conf->{$iface};
             die "wrong serial type on interface '$iface'\n" if $conf->{$iface} ne 'socket';
         } else {
