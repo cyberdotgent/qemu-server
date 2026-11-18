@@ -401,6 +401,15 @@ $qemu_server_helpers->mock(
     kvm_is_qemu_mod => sub {
         return $test_env->{qemu_mod};
     },
+    kvm_device_ipl_methods => sub {
+        my ($binary, $types) = @_;
+        # as reported by QEMU-mod
+        my $methods = {
+            (map { $_ => 'ccw' } qw(3590-ccw eckd-ccw fba-ccw vfio-ccw)),
+            (map { $_ => 'firmware' } qw(scsi-block scsi-cd scsi-hd virtio-blk-ccw virtio-net-ccw)),
+        };
+        return { map { $_ => $methods->{$_} // 'none' } @$types };
+    },
     kvm_device_types => sub {
         return { sclp3270console => 1 };
     },

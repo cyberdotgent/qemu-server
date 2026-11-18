@@ -5,6 +5,7 @@ use warnings;
 
 use File::stat;
 use IO::File;
+use JSON;
 
 use PVE::INotify;
 use PVE::ProcFSTools;
@@ -152,15 +153,72 @@ sub kvm_machine_types {
     return $types;
 }
 
-# The CCW device types that can IPL: virtio block, network and SCSI devices in QEMU, DASD, tape
-# and passthrough devices in QEMU-mod.
-# FIXME: ask the QEMU binary instead, once it reports which device types can IPL
-my $ipl_device_types = { map { $_ => 1 }
-    qw(virtio-blk-ccw virtio-net-ccw virtio-scsi-ccw eckd-ccw fba-ccw 3590-ccw vfio-ccw) };
+# Without the 'iplable' and 'ipl-method' device properties, QEMU's s390-ccw firmware can IPL from
+# virtio block and network devices and from SCSI disks and CD-ROMs, selected with bootindex.
+my $default_ipl_methods =
+    { map { $_ => 'firmware' } qw(virtio-blk-ccw virtio-net-ccw scsi-hd scsi-cd scsi-block) };
 
-sub kvm_device_can_ipl {
-    my ($binary, $type) = @_;
-    return $ipl_device_types->{$type} ? 1 : 0;
+my $kvm_ipl_methods = {};
+my $kvm_ipl_methods_mtime = {};
+
+# The default values of the properties of QEMU device types, from one QMP session.
+my sub query_device_type_properties {
+    my ($binary, $types) = @_;
+
+    my @commands = ({ execute => 'qmp_capabilities' });
+    push @commands,
+        map { { execute => 'device-list-properties', arguments => { typename => $_ }, id => $_ } }
+        @$types;
+    push @commands, { execute => 'quit' };
+    my $input = join('', map { JSON->new->canonical->encode($_) . "\n" } @commands);
+
+    my $res = {};
+    my $code = sub {
+        my $line = shift;
+        my $msg = eval { decode_json($line) } or return;
+        return if !defined($msg->{id}) || ref($msg->{return}) ne 'ARRAY';
+        $res->{ $msg->{id} } =
+            { map { $_->{name} => $_->{'default-value'} } $msg->{return}->@* };
+    };
+
+    PVE::Tools::run_command(
+        [$binary, '-machine', 'none', '-nodefaults', '-display', 'none', '-qmp', 'stdio'],
+        input => $input,
+        outfunc => $code,
+        timeout => 30,
+    );
+
+    return $res;
+}
+
+# Returns how the QEMU binary can IPL from devices of the given types: 'ccw' (a channel-program
+# IPL from the device), 'firmware' (through the s390-ccw firmware, selected with bootindex) or
+# 'none'. Device types without the 'iplable' property (QEMU without them) use the defaults above.
+sub kvm_device_ipl_methods {
+    my ($binary, $types) = @_;
+
+    my $st = stat($binary) or die "unable to stat QEMU binary '$binary' - $!\n";
+    if (($kvm_ipl_methods_mtime->{$binary} // -1) != $st->mtime) {
+        $kvm_ipl_methods->{$binary} = {};
+        $kvm_ipl_methods_mtime->{$binary} = $st->mtime;
+    }
+    my $methods = $kvm_ipl_methods->{$binary};
+
+    my @missing = grep { !exists($methods->{$_}) } @$types;
+    if (@missing) {
+        my $properties = eval { query_device_type_properties($binary, \@missing) } // {};
+        warn "unable to query the IPL capabilities of QEMU device types - $@" if $@;
+        for my $type (@missing) {
+            my $props = $properties->{$type};
+            if ($props && exists($props->{iplable})) {
+                $methods->{$type} = $props->{iplable} ? ($props->{'ipl-method'} // 'none') : 'none';
+            } else {
+                $methods->{$type} = $default_ipl_methods->{$type} // 'none';
+            }
+        }
+    }
+
+    return { map { $_ => $methods->{$_} } @$types };
 }
 
 # Paths and directories

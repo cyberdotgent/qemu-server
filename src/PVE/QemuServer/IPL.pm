@@ -47,9 +47,9 @@ my sub virtio_devno {
 }
 
 # The devices of a VM config that the QEMU binary can IPL from, sorted by key. Each entry has the
-# config 'key', the QEMU device 'type' qemu-server generates for it, the 'devno' of the CCW device
-# that IPLs (for SCSI devices, that of their virtio-scsi-ccw controller), the 'ccw-type' of that
-# device and a 'description'.
+# config 'key', the QEMU device 'type' qemu-server generates for it, the 'devno' of its CCW device
+# (for SCSI devices, that of their virtio-scsi-ccw controller), the 'ipl-method' the QEMU binary
+# reports for the type (see kvm_device_ipl_methods()) and a 'description'.
 sub get_ipl_devices {
     my ($conf, $storecfg, $kvm_binary) = @_;
 
@@ -67,7 +67,6 @@ sub get_ipl_devices {
         if ($drive->{interface} eq 'virtio') {
             $entry = {
                 type => 'virtio-blk-ccw',
-                'ccw-type' => 'virtio-blk-ccw',
                 devno => virtio_devno($key),
             };
         } elsif ($drive->{interface} eq 'scsi') {
@@ -77,7 +76,6 @@ sub get_ipl_devices {
             my (undef, $controller, $prefix) = scsihw_infos($conf->{scsihw}, $drive->{index});
             $entry = {
                 type => "scsi-$scsi_type",
-                'ccw-type' => 'virtio-scsi-ccw',
                 devno => virtio_devno("$prefix$controller"),
             };
         } else {
@@ -98,18 +96,15 @@ sub get_ipl_devices {
             {
                 key => $key,
                 type => 'virtio-net-ccw',
-                'ccw-type' => 'virtio-net-ccw',
                 devno => virtio_devno($key),
                 description => $description,
             };
     }
 
-    $res = [
-        grep {
-            defined($_->{devno})
-                && PVE::QemuServer::Helpers::kvm_device_can_ipl($kvm_binary, $_->{'ccw-type'})
-        } @$res
-    ];
+    my %types = map { $_->{type} => 1 } @$res;
+    my $methods = PVE::QemuServer::Helpers::kvm_device_ipl_methods($kvm_binary, [sort keys %types]);
+    $_->{'ipl-method'} = $methods->{ $_->{type} } for @$res;
+    $res = [grep { defined($_->{devno}) && $_->{'ipl-method'} ne 'none' } @$res];
 
     return [sort { $a->{key} cmp $b->{key} } @$res];
 }
@@ -132,11 +127,11 @@ sub check_ipl_config {
     return ($ipl, $device);
 }
 
-# virtio devices, also SCSI devices on virtio-scsi, IPL with the s390-ccw firmware, selected with
-# bootindex. Other CCW devices do a channel-program IPL, selected with the machine 'ipl' property.
+# Devices with the 'firmware' IPL method IPL through the s390-ccw firmware, selected with bootindex.
+# Those with 'ccw' do a channel-program IPL, selected with the machine 'ipl' property.
 sub ipl_with_bootindex {
     my ($device) = @_;
-    return $device->{'ccw-type'} =~ m/^virtio-/;
+    return $device->{'ipl-method'} eq 'firmware';
 }
 
 1;
