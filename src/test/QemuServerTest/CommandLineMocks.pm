@@ -412,7 +412,7 @@ $qemu_server_helpers->mock(
         return { map { $_ => $methods->{$_} // 'none' } @$types };
     },
     kvm_device_types => sub {
-        return { map { $_ => 1 } qw(3590-ccw qeth-ccw sclp3270console) };
+        return { map { $_ => 1 } qw(3590-ccw qeth-ccw sclp3270console x-terminal3270) };
     },
     kvm_machine_types => sub {
         # x-test-sys and x-test-lpar are made-up unversioned machine types

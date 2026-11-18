@@ -1,0 +1,29 @@
+/usr/bin/kvm \
+  -id 8006 \
+  -name vm8006 \
+  -no-shutdown \
+  -chardev 'socket,id=qmp,path=/var/run/qemu-server/8006.qmp,server=on,wait=off' \
+  -object 'monitor-qmp,chardev=qmp,id=monitor-qmp' \
+  -chardev 'socket,id=qmp-event,path=/var/run/qmeventd.sock,reconnect-ms=5000' \
+  -object 'monitor-qmp,chardev=qmp-event,id=monitor-qmp-event' \
+  -pidfile /var/run/qemu-server/8006.pid \
+  -daemonize \
+  -smp '1,sockets=1,cores=1,maxcpus=1' \
+  -nodefaults \
+  -vga none \
+  -nographic \
+  -cpu host \
+  -m 1024 \
+  -chardev 'socket,id=sclplm,path=/var/run/qemu-server/8006.sclplm,server=on,wait=off' \
+  -device 'sclplmconsole,chardev=sclplm' \
+  -chardev 'socket,id=sclp3270,path=/var/run/qemu-server/8006.3270,server=on,wait=off,tn3270=on' \
+  -device 'sclp3270console,chardev=sclp3270' \
+  -chardev 'socket,id=terminal0,path=/var/run/qemu-server/8006.terminal0,server=on,wait=off,tn3270=on' \
+  -device 'x-terminal3270,chardev=terminal0,devno=fe.0.0300,id=terminal0' \
+  -chardev 'socket,id=terminal1,path=/var/run/qemu-server/8006.terminal1,server=on,wait=off,tn3270=on' \
+  -device 'x-terminal3270,chardev=terminal1,devno=fe.0.0301,id=terminal1' \
+  -chardev 'socket,id=terminal5,path=/var/run/qemu-server/8006.terminal5,server=on,wait=off,tn3270=on' \
+  -device 'x-terminal3270,chardev=terminal5,devno=fe.0.0302,id=terminal5' \
+  -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
+  -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
+  -machine 'type=s390-ccw-virtio+pve0'

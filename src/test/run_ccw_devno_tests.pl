@@ -152,4 +152,45 @@ is(
     'next qeth after a registered user',
 );
 
+my $qeth_terminal_conf = {
+    net0 => 'qeth=BC:24:11:00:00:01,bridge=vmbr0,devno=0.0.0400',
+    net1 => 'virtio=BC:24:11:00:00:02,bridge=vmbr0',
+    net2 => 'bridge=vmbr0,model=qeth,devno=0404',
+    net3 => 'qeth=BC:24:11:00:00:03,bridge=vmbr0',
+    terminal0 => '0.0.0700',
+    terminal1 => 'model=4,devno=0701',
+    terminal2 => '0702,model=5',
+};
+is_deeply(
+    PVE::QemuServer::CCW::get_devno_users($qeth_terminal_conf),
+    [
+        { key => 'net0', kind => 'qeth', devno => '0.0.0400', count => 3 },
+        { key => 'net2', kind => 'qeth', devno => '0404', count => 3 },
+        { key => 'net3', kind => 'qeth', devno => undef, count => 3 },
+        { key => 'terminal0', kind => '3270', devno => '0.0.0700', count => 1 },
+        { key => 'terminal1', kind => '3270', devno => '0701', count => 1 },
+        { key => 'terminal2', kind => '3270', devno => '0702', count => 1 },
+    ],
+    'qeth network devices and 3270 terminals use device numbers',
+);
+is(
+    PVE::QemuServer::CCW::next_free_devno($qeth_terminal_conf, 'qeth'),
+    '0.0.0408',
+    'next free qeth after two adapters',
+);
+is(
+    PVE::QemuServer::CCW::next_free_devno($qeth_terminal_conf, '3270'),
+    '0.0.0703',
+    'next free 3270 terminal',
+);
+eval {
+    PVE::QemuServer::CCW::check_devno_conflicts(
+        { net0 => 'qeth=BC:24:11:00:00:01,devno=0.0.0700', terminal0 => '0.0.0702' });
+};
+like(
+    $@,
+    qr/^terminal0: device number 0\.0\.0702 is already used by net0/,
+    'a qeth adapter uses three device numbers',
+);
+
 done_testing();

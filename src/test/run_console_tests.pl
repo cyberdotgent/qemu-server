@@ -58,6 +58,16 @@ my $terminal_tests = [
         args => ['3270', 0x0f],
         expected => ['c3270', 'U:/var/run/qemu-server/100.3270'],
     },
+    {
+        name => '3270 terminal uses c3270',
+        args => ['terminal0', 0],
+        expected => ['c3270', 'U:/var/run/qemu-server/100.terminal0'],
+    },
+    {
+        name => '3270 terminal with a model',
+        args => ['terminal15', 0x0f, 5],
+        expected => ['c3270', '-model', '3279-5', 'U:/var/run/qemu-server/100.terminal15'],
+    },
 ];
 
 for my $test ($terminal_tests->@*) {
@@ -67,6 +77,10 @@ for my $test ($terminal_tests->@*) {
         $test->{name},
     );
 }
+
+my $ifaces = PVE::QemuServer::Helpers::terminal_ifaces();
+is(scalar($ifaces->@*), 23, 'terminal interfaces: 4 serial ports, 3 SCLP consoles, 16 terminals');
+ok((grep { $_ eq 'terminal15' } $ifaces->@*), 'last 3270 terminal is a terminal interface');
 
 my $device_help = <<'EOF';
 Controller/Bridge/Hub devices:

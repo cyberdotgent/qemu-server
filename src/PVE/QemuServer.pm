@@ -965,6 +965,45 @@ for (my $i = 0; $i < $MAX_SERIAL_PORTS; $i++) {
     $confdesc->{"serial$i"} = $serialdesc;
 }
 
+my $terminal_fmt = {
+    devno => {
+        default_key => 1,
+        type => 'string',
+        format => 'pve-qm-ccw-devno',
+        format_description => 'devno',
+        description =>
+            "The device number of the 3270 terminal as the guest sees it, for example"
+            . " '0.0.0700'.",
+    },
+    model => {
+        optional => 1,
+        type => 'string',
+        enum => [qw(2 3 4 5)],
+        description => "The 3270 model the console emulates: 2 (24x80), 3 (32x80), 4 (43x80) or"
+            . " 5 (27x132). By default, the largest of the models 2 to 4 that fits the console.",
+    },
+};
+PVE::JSONSchema::register_format('pve-qm-terminal', $terminal_fmt);
+
+my $terminaldesc = {
+    optional => 1,
+    type => 'string',
+    format => 'pve-qm-terminal',
+    description => "s390x: a local 3270 terminal (n is 0 to "
+        . ($PVE::QemuServer::Helpers::MAX_TERMINALS - 1)
+        . "), a CCW device the guest sees as a 3270 display. Open it with 'qm terminal"
+        . " -iface terminal<n>'.",
+};
+
+for (my $i = 0; $i < $PVE::QemuServer::Helpers::MAX_TERMINALS; $i++) {
+    $confdesc->{"terminal$i"} = $terminaldesc;
+}
+
+sub parse_terminal {
+    my ($value) = @_;
+    return parse_property_string($terminal_fmt, $value);
+}
+
 for (my $i = 0; $i < $PVE::QemuServer::PCI::MAX_HOSTPCI_DEVICES; $i++) {
     $confdesc->{"hostpci$i"} = $PVE::QemuServer::PCI::hostpcidesc;
 }
@@ -3586,6 +3625,20 @@ sub config_to_command {
     push $devices->@*,
         PVE::QemuServer::Tape::get_command_args($storecfg, $conf, $arch, $kvm_binary)->@*
         if !$is_template;
+
+    # local 3270 terminals of s390x, one TN3270 socket each
+    for (my $i = 0; $i < $PVE::QemuServer::Helpers::MAX_TERMINALS; $i++) {
+        my $opt = "terminal$i";
+        my $term = $conf->{$opt} ? parse_terminal($conf->{$opt}) : next;
+        die "$opt: 3270 terminals are only supported on s390x\n" if $arch ne 's390x';
+        # not part of upstream QEMU, but of QEMU builds with mainframe support
+        die "$opt: the installed QEMU has no 3270 terminals (x-terminal3270)\n"
+            if !PVE::QemuServer::Helpers::kvm_device_types($kvm_binary)->{'x-terminal3270'};
+        my $socket = PVE::QemuServer::Helpers::console_socket($vmid, $opt);
+        my $devno = PVE::QemuServer::CCW::qemu_devno($term->{devno});
+        push @$devices, '-chardev', "socket,id=$opt,path=$socket,server=on,wait=off,tn3270=on";
+        push @$devices, '-device', "x-terminal3270,chardev=$opt,devno=$devno,id=$opt";
+    }
 
     # serial devices
     my $s390x_console_bus = 0;

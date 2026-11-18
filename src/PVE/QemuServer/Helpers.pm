@@ -293,22 +293,37 @@ sub is_linux_ostype {
     return ($ostype // 'other') =~ m/^l\d\d$/;
 }
 
+# The 3270 terminals ('terminalN') of an s390x VM, CCW devices that QEMU serves over TN3270 on a
+# socket each.
+our $MAX_TERMINALS = 16;
+
+# The interfaces 'qm terminal' and termproxy can open: serial ports, the SCLP consoles of s390x
+# VMs and their 3270 terminals.
+sub terminal_ifaces {
+    return [
+        (map { "serial$_" } 0 .. 3),
+        qw(sclp sclplm 3270),
+        (map { "terminal$_" } 0 .. $MAX_TERMINALS - 1),
+    ];
+}
+
 sub console_socket {
     my ($vmid, $console) = @_;
     return "${var_run_tmpdir}/${vmid}.$console";
 }
 
 # The command that attaches the terminal to the console or serial port $iface of a VM, $escape is
-# the character code of the escape key (0 for none).
+# the character code of the escape key (0 for none). $model is the 3270 model to emulate for a
+# 3270 terminal, if configured.
 sub get_terminal_command {
-    my ($vmid, $iface, $escape) = @_;
+    my ($vmid, $iface, $escape, $model) = @_;
 
     my $socket = console_socket($vmid, $iface);
 
-    if ($iface eq '3270') {
-        # c3270 talks TN3270 to the socket itself and has its own escape key (Ctrl+]). It
-        # emulates the largest 3270 model that fits the terminal (model 2 to 4).
-        return ['c3270', "U:$socket"];
+    if ($iface eq '3270' || $iface =~ m/^terminal\d+$/) {
+        # c3270 talks TN3270 to the socket itself and has its own escape key (Ctrl+]). Without a
+        # model, it emulates the largest 3270 model that fits the terminal (model 2 to 4).
+        return ['c3270', (defined($model) ? ('-model', "3279-$model") : ()), "U:$socket"];
     }
 
     my $options = 'raw,echo=0';

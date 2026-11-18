@@ -106,10 +106,17 @@ sub run_vnc_proxy {
 # c3270 picks the 3270 model from the terminal size once at startup and needs at least 24x80
 # (model 2). termproxy only sets the final size of the terminal after starting the command, so
 # wait for it a moment.
+# The screen sizes of the 3270 models, c3270 needs a terminal of at least that size.
+my $model_3270_sizes = { 2 => [24, 80], 3 => [32, 80], 4 => [43, 80], 5 => [27, 132] };
+
 my sub wait_for_3270_terminal_size {
+    my ($model) = @_;
+
+    my ($min_rows, $min_cols) = $model_3270_sizes->{ $model // 2 }->@*;
     for (my $i = 0; $i < 20; $i++) {
         my ($rows, $cols) = split(/\s+/, `stty size 2>/dev/null` // '');
-        return if !defined($cols) || ($rows >= 24 && $cols >= 80); # not a terminal or large enough
+        # not a terminal or large enough
+        return if !defined($cols) || ($rows >= $min_rows && $cols >= $min_cols);
         select(undef, undef, undef, 0.1);
     }
 }
@@ -825,10 +832,10 @@ __PACKAGE__->register_method({
                     "Select the serial device. By default we simply use the first suitable device."
                     . " On s390x, 'sclp' (VT220, Linux), 'sclplm' (line mode) and '3270'"
                     . " (integrated 3270) select the SCLP consoles, the default is the first"
-                    . " console of the OS type.",
+                    . " console of the OS type, and 'terminal<n>' the 3270 terminals.",
                 type => 'string',
                 optional => 1,
-                enum => [qw(serial0 serial1 serial2 serial3 sclp sclplm 3270)],
+                enum => PVE::QemuServer::Helpers::terminal_ifaces(),
             },
             escape => {
                 description => "Escape character.",
@@ -863,7 +870,13 @@ __PACKAGE__->register_method({
             ? PVE::QemuServer::Helpers::get_s390x_consoles($conf)
             : [];
 
-        if ($iface && $iface =~ m/^(?:sclp|sclplm|3270)$/) {
+        my $model;
+        if ($iface && $iface =~ m/^terminal\d+$/) {
+            die "interface '$iface' only exists for s390x VMs\n"
+                if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
+            die "3270 terminal '$iface' is not configured\n" if !$conf->{$iface};
+            $model = PVE::QemuServer::parse_terminal($conf->{$iface})->{model};
+        } elsif ($iface && $iface =~ m/^(?:sclp|sclplm|3270)$/) {
             die "interface '$iface' only exists for s390x VMs\n" if !scalar($consoles->@*);
             die "VM $vmid has no console '$iface' with its OS type, it has: "
                 . join(', ', $consoles->@*) . "\n"
@@ -889,10 +902,12 @@ __PACKAGE__->register_method({
             if $iface !~ m/^serial\d$/
             && !-S PVE::QemuServer::Helpers::console_socket($vmid, $iface);
 
-        my $cmd = PVE::QemuServer::Helpers::get_terminal_command($vmid, $iface, $escape);
+        my $cmd =
+            PVE::QemuServer::Helpers::get_terminal_command($vmid, $iface, $escape, $model);
 
+        my $is_3270 = $iface eq '3270' || $iface =~ m/^terminal\d+$/;
         my $escapemsg = '';
-        if ($iface eq '3270') {
+        if ($is_3270) {
             $escapemsg = ' (press Ctrl+] for the c3270 prompt, quit to exit)';
         } elsif ($escape) {
             $escapemsg = sprintf(' (press Ctrl+%c to exit)', $escape + 0x40);
@@ -900,7 +915,7 @@ __PACKAGE__->register_method({
 
         print "starting serial terminal on interface ${iface}${escapemsg}\n";
 
-        wait_for_3270_terminal_size() if $iface eq '3270';
+        wait_for_3270_terminal_size($model) if $is_3270;
 
         system($cmd->@*);
 

@@ -71,6 +71,15 @@ my $devno_users = [
             return ('qeth', devno_property($value));
         },
     ],
+    [
+        qr/^terminal\d+$/,
+        sub {
+            my ($key, $value) = @_;
+            # the device number is the default key
+            my $devno = devno_property($value) // ($value =~ m/^([^,=]+)(?:,|$)/ ? $1 : undef);
+            return ('3270', $devno);
+        },
+    ],
 ];
 
 =head3 register_devno_user($key_re, $code)
