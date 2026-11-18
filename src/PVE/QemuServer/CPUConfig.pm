@@ -29,7 +29,7 @@ our @EXPORT_OK = qw(
 my $arch_desc = {
     description => "Virtual processor architecture. Defaults to the host architecture.",
     type => 'string',
-    enum => [qw(x86_64 aarch64)],
+    enum => [qw(x86_64 aarch64 s390x)],
 };
 PVE::JSONSchema::register_standard_option("pve-qm-cpu-arch", $arch_desc);
 
@@ -84,6 +84,7 @@ my $builtin_models_by_arch = {
         },
     },
     aarch64 => {},
+    s390x => {},
 };
 
 my $all_builtin_models;
@@ -1153,9 +1154,10 @@ sub get_cpu_from_running_vm($pid) {
 sub get_default_cpu_type($arch, $kvm) {
 
     my $cputype = $kvm ? 'kvm64' : 'qemu64';
-    if ($arch eq 'aarch64') {
+    if ($arch eq 'aarch64' || $arch eq 's390x') {
         # KVM on aarch64 only accepts 'host'/'max' (plus the legacy cortex-a53/-a57 targets); use
         # 'host' to pass the real host CPU through. Without KVM, the emulated 'max' works instead.
+        # The same defaults are used for s390x.
         $cputype = $kvm ? 'host' : 'max';
     }
 
