@@ -553,6 +553,14 @@ my sub prohibit_tpm_version_change {
     return;
 }
 
+# The defined ones of the pending and the current value of a config key, as copies: a foreach loop
+# over the hash elements themselves would create them (as undef) in the config.
+my sub pending_and_current_value {
+    my ($conf, $key) = @_;
+    my $pending = $conf->{pending} // {};
+    return grep { defined } map { exists($_->{$key}) ? $_->{$key} : undef } $pending, $conf;
+}
+
 # Note: $pool is only needed when creating a VM, because pool permissions
 # are automatically inherited if VM already exists inside a pool.
 my sub create_disks : prototype($$$$$$$$$$$) {
@@ -581,7 +589,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
         my ($ds, $disk) = @_;
 
         if (!defined($disk->{devno})) {
-            for my $old (($conf->{pending} // {})->{$ds}, $conf->{$ds}) {
+            for my $old (pending_and_current_value($conf, $ds)) {
                 next if !defined($old);
                 my $old_drive = PVE::QemuServer::Drive::parse_drive($ds, $old) or next;
                 $disk->{devno} = $old_drive->{devno};
@@ -624,7 +632,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
     my $check_dasd_volume = sub {
         my ($ds, $disk, $size) = @_;
 
-        for my $old (($conf->{pending} // {})->{$ds}, $conf->{$ds}) {
+        for my $old (pending_and_current_value($conf, $ds)) {
             next if !defined($old);
             my $old_drive = PVE::QemuServer::Drive::parse_drive($ds, $old) or next;
             next if $old_drive->{file} ne $disk->{file};

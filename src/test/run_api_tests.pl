@@ -343,4 +343,76 @@ subtest 'status' => sub {
     $qemu_server_module->unmock('vmstatus');
 };
 
+subtest 's390x: adding DASDs to an existing VM' => sub {
+    my $stored;
+    my $freed = [];
+    my $allocated = 0;
+
+    $qemu_config_module->mock(
+        load_config => sub { return dclone($stored); },
+        lock_config => sub {
+            my ($class, $vmid, $code, @param) = @_;
+            return $code->(@param);
+        },
+        write_config => sub {
+            my ($class, $vmid, $conf) = @_;
+            # what writing the config file checks: every value is defined
+            for my $key (keys %$conf) {
+                die "unable to parse value of '$key' - got undefined value\n"
+                    if !defined($conf->{$key});
+            }
+            $stored = dclone($conf);
+        },
+    );
+    my $qemu_server_module = Test::MockModule->new('PVE::QemuServer');
+    $qemu_server_module->mock(check_running => sub { return 1; }); # changes stay pending
+    $qemu_server_module->mock(vmconfig_hotplug_pending => sub { return; });
+    my $storage = Test::MockModule->new('PVE::Storage');
+    $storage->mock(
+        config => sub { return {}; },
+        storage_config => sub {
+            return { type => 'dir', path => '/var/lib/vz', content => { images => 1 } };
+        },
+        storage_check_enabled => sub { return; },
+        storage_default_format => sub { return ('raw', ['raw']); },
+        vdisk_alloc => sub {
+            my ($cfg, $storeid, $vmid, $fmt, $name, $size) = @_;
+            $allocated++;
+            return "$storeid:$vmid/vm-$vmid-disk-$allocated.raw";
+        },
+        vdisk_free => sub { push @$freed, $_[1]; },
+    );
+    my $rpcenv_module = Test::MockModule->new('PVE::RPCEnvironment');
+    $rpcenv_module->mock(check => sub { return 1; });
+    my $dasd = Test::MockModule->new('PVE::QemuServer::DASD');
+    $dasd->mock(init_ckd_volume => sub { die "header write failed\n"; });
+
+    $stored = {
+        arch => 's390x',
+        ostype => 'other',
+        fba0 => 'local:100/vm-100-disk-0.raw,devno=0.0.0200,size=1G',
+        pending => {},
+        snapshots => {},
+    };
+
+    PVE::API2::Qemu->update_vm({ node => 'localhost', vmid => 100, fba7 => 'local:1' });
+    like(
+        $stored->{pending}->{fba7} // '',
+        qr/^local:100\/vm-100-disk-1\.raw,devno=0\.0\.0201,size=1G$/,
+        'new FBA DASD created with the next free device number',
+    );
+    ok(!exists($stored->{fba7}), 'no empty current value left in the config');
+    is_deeply($freed, [], 'nothing freed');
+
+    eval {
+        PVE::API2::Qemu->update_vm(
+            { node => 'localhost', vmid => 100, ckd3 => 'local:0,model=3390-1' });
+    };
+    like($@, qr/header write failed/, 'failing CKD creation');
+    is_deeply($freed, ['local:100/vm-100-disk-2.raw'], 'the new volume is freed on failure');
+    ok(!exists($stored->{pending}->{ckd3}) && !exists($stored->{ckd3}), 'no ckd3 in the config');
+
+    mock_unreachable_config();
+};
+
 done_testing();
