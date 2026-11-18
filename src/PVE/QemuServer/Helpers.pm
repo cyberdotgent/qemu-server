@@ -50,6 +50,7 @@ sub get_vm_arch {
 }
 
 my $kvm_user_version = {};
+my $kvm_is_qemu_mod = {};
 my $kvm_mtime = {};
 
 sub kvm_user_version {
@@ -64,12 +65,14 @@ sub kvm_user_version {
         && $cachedmtime == $st->mtime;
 
     $kvm_user_version->{$binary} = 'unknown';
+    $kvm_is_qemu_mod->{$binary} = 0;
     $kvm_mtime->{$binary} = $st->mtime;
 
     my $code = sub {
         my $line = shift;
-        if ($line =~ m/^QEMU(?:-mod)?( PC)? emulator version (\d+\.\d+(\.\d+)?)(\.\d+)?[,\s]/) {
-            $kvm_user_version->{$binary} = $2;
+        if ($line =~ m/^QEMU(-mod)?( PC)? emulator version (\d+\.\d+(\.\d+)?)(\.\d+)?[,\s]/) {
+            $kvm_user_version->{$binary} = $3;
+            $kvm_is_qemu_mod->{$binary} = defined($1) ? 1 : 0;
         }
     };
 
@@ -77,6 +80,17 @@ sub kvm_user_version {
     warn $@ if $@;
 
     return $kvm_user_version->{$binary};
+}
+
+# Whether the QEMU binary is a QEMU-mod build, detected together with its version. QEMU-mod
+# follows upstream master, so an X.Y.90 version is its normal state there, not a release candidate.
+sub kvm_is_qemu_mod {
+    my ($binary) = @_;
+
+    $binary //= get_command_for_arch(get_host_arch());
+    kvm_user_version($binary); # parses --version once, cached with the version
+
+    return $kvm_is_qemu_mod->{$binary} // 0;
 }
 
 my $kvm_device_types = {};

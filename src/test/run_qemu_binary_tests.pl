@@ -54,6 +54,11 @@ for my $test ($tests->@*) {
 
     my $version = PVE::QemuServer::Helpers::kvm_user_version($binary);
     is($version, $test->{expected}, $test->{name});
+    is(
+        PVE::QemuServer::Helpers::kvm_is_qemu_mod($binary),
+        $test->{name} eq 'QEMU-mod build' ? 1 : 0,
+        "$test->{name}: QEMU-mod detection",
+    );
 }
 
 my $machine_help = <<'EOF';

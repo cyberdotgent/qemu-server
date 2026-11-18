@@ -34,6 +34,7 @@ my $current_test; # = {
 # use the config description to allow changing environment, fields are:
 #   TEST: A single line describing the test, gets outputted
 #   QEMU_VERSION: \d+\.\d+(\.\d+)? (defaults to current version)
+#   QEMU_MOD: 0 | 1 whether the QEMU binary is a QEMU-mod build (defaults to the current binary's)
 #   HOST_ARCH: x86_64 | aarch64 (default to x86_64, to make tests stable)
 #   HOST_CPU_VENDOR: AuthenticAMD | GenuineIntel | etc. (defaults to GenuineIntel)
 #   EXPECT_ERROR: <error message> For negative tests
@@ -62,6 +63,8 @@ sub parse_test($config_fn) {
             $current_test->{description} = "$1";
         } elsif ($line =~ /^QEMU_VERSION:\s*(.*)\s*$/) {
             $current_test->{qemu_version} = "$1";
+        } elsif ($line =~ /^QEMU_MOD:\s*(.*)\s*$/) {
+            $current_test->{qemu_mod} = "$1";
         } elsif ($line =~ /^HOST_ARCH:\s*(.*)\s*$/) {
             $current_test->{host_arch} = "$1";
         } elsif ($line =~ /^HOST_CPU_VENDOR:\s*(.*)\s*$/) {

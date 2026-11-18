@@ -3196,7 +3196,12 @@ sub config_to_command {
     $machine_version =~ m/(\d+)\.(\d+)/;
     my ($machine_major, $machine_minor) = ($1, $2);
 
-    if ($kvmver =~ m/^\d+\.\d+\.(\d+)/ && $1 >= 90) {
+    # QEMU-mod follows upstream master, its X.Y.90 is checked like a normal X.Y release
+    if (
+        $kvmver =~ m/^\d+\.\d+\.(\d+)/
+        && $1 >= 90
+        && !PVE::QemuServer::Helpers::kvm_is_qemu_mod($kvm_binary)
+    ) {
         warn
             "warning: Installed QEMU version ($kvmver) is a release candidate, ignoring version checks\n";
     } elsif (!min_version($kvmver, $machine_major, $machine_minor)) {

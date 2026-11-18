@@ -41,6 +41,7 @@ our @EXPORT_OK = qw(
 
 # can be overwritten by individual tests
 my $real_qemu_version = PVE::QemuServer::Helpers::kvm_user_version();
+my $real_qemu_mod = PVE::QemuServer::Helpers::kvm_is_qemu_mod();
 
 # the properties of the host for the current test, see set_test_env()
 my $test_env = {};
@@ -240,11 +241,13 @@ my $cpu_hw_capabilities = {
 
 # Set the properties of the (mocked) host for the following test, fields are:
 #   qemu_version: version of the installed QEMU binary (defaults to the real version)
+#   qemu_mod: whether it is a QEMU-mod build (defaults to the real binary's, without qemu_version 0)
 #   host_arch: x86_64 | aarch64 (defaults to x86_64)
 #   host-cpu-vendor: AuthenticAMD | GenuineIntel | etc. (defaults to GenuineIntel)
 #   hw_capabilities: a CPU from $cpu_hw_capabilities above or a raw JSON string
 sub set_test_env($env) {
     $test_env = $env;
+    $test_env->{qemu_mod} //= defined($test_env->{qemu_version}) ? 0 : $real_qemu_mod;
     $test_env->{qemu_version} //= $real_qemu_version // '2.12';
     $test_env->{host_arch} //= 'x86_64';
     $test_env->{'host-cpu-vendor'} //= 'GenuineIntel';
@@ -394,6 +397,9 @@ $qemu_server_helpers = Test::MockModule->new('PVE::QemuServer::Helpers');
 $qemu_server_helpers->mock(
     get_host_phys_address_bits => sub {
         return 46;
+    },
+    kvm_is_qemu_mod => sub {
+        return $test_env->{qemu_mod};
     },
     kvm_device_types => sub {
         return { sclp3270console => 1 };
