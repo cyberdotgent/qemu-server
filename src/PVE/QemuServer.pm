@@ -1004,6 +1004,11 @@ sub parse_terminal {
     return parse_property_string($terminal_fmt, $value);
 }
 
+sub print_terminal {
+    my ($terminal) = @_;
+    return PVE::JSONSchema::print_property_string($terminal, $terminal_fmt);
+}
+
 for (my $i = 0; $i < $PVE::QemuServer::PCI::MAX_HOSTPCI_DEVICES; $i++) {
     $confdesc->{"hostpci$i"} = $PVE::QemuServer::PCI::hostpcidesc;
 }

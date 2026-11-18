@@ -553,6 +553,33 @@ my sub prohibit_tpm_version_change {
     return;
 }
 
+# Write the device numbers of the s390x CCW devices in the parameters (3270 terminals, tape
+# drives, qeth adapters) in their canonical form 0.<ssid>.<devno>, as for DASDs. Values that do
+# not parse are left to the later checks.
+my sub normalize_ccw_devnos {
+    my ($param) = @_;
+
+    for my $key (sort keys %$param) {
+        my $value = $param->{$key};
+        next if !defined($value);
+        if ($key =~ m/^terminal\d+$/) {
+            my $terminal = eval { PVE::QemuServer::parse_terminal($value) } or next;
+            $terminal->{devno} = PVE::QemuServer::CCW::normalize_devno($terminal->{devno});
+            $param->{$key} = PVE::QemuServer::print_terminal($terminal);
+        } elsif (PVE::QemuServer::Tape::is_tape_key($key)) {
+            my $tape = eval { PVE::QemuServer::Tape::parse_tape($value) } or next;
+            next if !defined($tape->{devno});
+            $tape->{devno} = PVE::QemuServer::CCW::normalize_devno($tape->{devno});
+            $param->{$key} = PVE::QemuServer::Tape::print_tape($tape);
+        } elsif ($key =~ m/^net\d+$/) {
+            my $net = eval { PVE::QemuServer::Network::parse_net($value, 1) } or next;
+            next if !defined($net->{devno});
+            $net->{devno} = PVE::QemuServer::CCW::normalize_devno($net->{devno});
+            $param->{$key} = PVE::QemuServer::Network::print_net($net);
+        }
+    }
+}
+
 # The defined ones of the pending and the current value of a config key, as copies: a foreach loop
 # over the hash elements themselves would create them (as undef) in the config.
 my sub pending_and_current_value {
@@ -1717,6 +1744,7 @@ __PACKAGE__->register_method({
             $check_drive_param->($param, $storecfg);
 
             PVE::QemuServer::Network::add_random_macs($param);
+            normalize_ccw_devnos($param);
         }
 
         my $emsg = $is_restore ? "unable to restore VM $vmid -" : "unable to create VM $vmid -";
@@ -2805,6 +2833,8 @@ my $update_vm_api = sub {
     };
 
     $check_drive_param->($param, $storecfg, $check_replication);
+
+    normalize_ccw_devnos($param);
 
     foreach my $opt (keys %$param) {
         if ($opt =~ m/^net(\d+)$/) {
