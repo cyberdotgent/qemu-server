@@ -135,6 +135,18 @@ for my $test ($conflict_tests->@*) {
 }
 
 is(
+    PVE::QemuServer::CCW::next_free_devno({ tape0 => 'local:iso/a.aws', tape1 => 'none' }, 'tape'),
+    '0.0.0582',
+    'tape drives have default device numbers',
+);
+eval {
+    PVE::QemuServer::CCW::check_devno_conflicts(
+        { tape0 => 'none', ckd0 => 'local:1/x.raw,devno=0580' },
+    );
+};
+like($@, qr/^tape0: device number 0\.0\.0580 is already used by ckd0/, 'tape conflict');
+
+is(
     PVE::QemuServer::CCW::next_free_devno({ testqeth0 => 'devno=0.0.0400' }, 'qeth'),
     '0.0.0404',
     'next qeth after a registered user',

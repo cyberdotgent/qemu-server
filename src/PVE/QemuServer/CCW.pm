@@ -53,6 +53,15 @@ my sub devno_property {
 my $devno_users = [
     [qr/^fba\d+$/, sub { return ('fba', devno_property($_[1])); }],
     [qr/^ckd\d+$/, sub { return ('ckd', devno_property($_[1])); }],
+    [
+        qr/^tape\d+$/,
+        sub {
+            my ($key, $value) = @_;
+            # a tape drive without one has the default 0.0.0580 + index, see PVE::QemuServer::Tape
+            my ($index) = $key =~ m/(\d+)$/;
+            return ('tape', devno_property($value) // print_devno(0, 0x0580 + $index));
+        },
+    ],
 ];
 
 =head3 register_devno_user($key_re, $code)
