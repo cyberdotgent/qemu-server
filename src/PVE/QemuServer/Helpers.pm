@@ -15,6 +15,7 @@ our @EXPORT_OK = qw(
     min_version
     config_aware_timeout
     get_iscsi_initiator_name
+    kvm_machine_types
     kvm_user_version
     parse_number_sets
     windows_version
@@ -101,6 +102,38 @@ sub kvm_device_types {
 
     $kvm_device_types->{$binary} = $types;
     $kvm_device_types_mtime->{$binary} = $st->mtime;
+
+    return $types;
+}
+
+my $kvm_machine_types = {};
+my $kvm_machine_types_mtime = {};
+
+# Returns a hash with the names of the machine types (including aliases) the QEMU binary supports.
+sub kvm_machine_types {
+    my ($binary) = @_;
+
+    my $st = stat($binary) or die "unable to stat QEMU binary '$binary' - $!\n";
+
+    return $kvm_machine_types->{$binary}
+        if $kvm_machine_types->{$binary}
+        && ($kvm_machine_types_mtime->{$binary} // -1) == $st->mtime;
+
+    my $types = {};
+    my $list_started;
+    my $code = sub {
+        my $line = shift;
+        if (!$list_started) {
+            $list_started = $line =~ m/^Supported machines are:/;
+        } elsif ($line =~ m/^(\S+)/) {
+            $types->{$1} = 1;
+        }
+    };
+
+    PVE::Tools::run_command([$binary, '-machine', 'help'], outfunc => $code);
+
+    $kvm_machine_types->{$binary} = $types;
+    $kvm_machine_types_mtime->{$binary} = $st->mtime;
 
     return $types;
 }

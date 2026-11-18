@@ -56,4 +56,27 @@ for my $test ($tests->@*) {
     is($version, $test->{expected}, $test->{name});
 }
 
+my $machine_help = <<'EOF';
+Supported machines are:
+x-test-sys           Made-up unversioned machine type (secure)
+none                 empty machine
+s390-ccw-virtio-11.1 Virtual s390x machine (version 11.1) (secure)
+s390-ccw-virtio      Virtual s390x machine (version 11.2) (alias of s390-ccw-virtio-11.2)
+s390-ccw-virtio-11.2 Virtual s390x machine (version 11.2) (default) (secure)
+EOF
+
+my $binary = "$dir/kvm-machines";
+file_set_contents($binary, "#!/bin/sh\ncat <<'EOF'\n${machine_help}EOF\n", 0755);
+is_deeply(
+    PVE::QemuServer::Helpers::kvm_machine_types($binary),
+    {
+        'x-test-sys' => 1,
+        none => 1,
+        's390-ccw-virtio-11.1' => 1,
+        's390-ccw-virtio' => 1,
+        's390-ccw-virtio-11.2' => 1,
+    },
+    'machine types from -machine help, including aliases and unversioned ones',
+);
+
 done_testing();

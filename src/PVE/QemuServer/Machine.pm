@@ -54,13 +54,24 @@ our $PVE_MACHINE_VERSION = {
     },
 };
 
+# Machine types of the families known to qemu-server, with or without a version. Any other machine
+# type is an unversioned one provided by the QEMU build, e.g. the additional s390x machines of
+# QEMU-mod. Those are used as-is: they follow the installed QEMU binary and get neither a version
+# pinned nor a +pveX revision appended.
+my $known_machine_family_re = qr/
+    ^(?:
+        (?:pc|q35|virt|s390-ccw-virtio)(?:$|[+.])
+        |(?:pc(?:-i440fx|-q35)?|virt|s390-ccw-virtio)-\d
+    )
+/x;
+
 my $machine_fmt = {
     type => {
         default_key => 1,
         description => "Specifies the QEMU machine type.",
         type => 'string',
         pattern =>
-            '(pc|pc(-i440fx)?-\d+(\.\d+)+(\+pve\d+)?(\.pxe)?|q35|pc-q35-\d+(\.\d+)+(\+pve\d+)?(\.pxe)?|virt(?:-\d+(\.\d+)+)?(\+pve\d+)?|s390-ccw-virtio(?:-\d+(\.\d+)+)?(\+pve\d+)?)',
+            '(pc|pc(-i440fx)?-\d+(\.\d+)+(\+pve\d+)?(\.pxe)?|q35|pc-q35-\d+(\.\d+)+(\+pve\d+)?(\.pxe)?|virt(?:-\d+(\.\d+)+)?(\+pve\d+)?|s390-ccw-virtio(?:-\d+(\.\d+)+)?(\+pve\d+)?|[a-z](?:[a-z0-9-]*[a-z0-9])?)',
         maxLength => 40,
         format_description => 'machine type',
         optional => 1,
@@ -152,13 +163,32 @@ sub assert_valid_machine_property {
         if $machine_conf->{'aw-bits'} && !$machine_conf->{viommu};
 }
 
+=head3 is_unversioned_machine_type
+
+    if (is_unversioned_machine_type($machine_type)) {
+        push $machine_flags->@*, "type=$machine_type";
+    }
+
+Returns whether C<$machine_type> is not one of the machine families known to qemu-server, i.e. an
+unversioned machine type of the QEMU build, which is used as-is. Whether the installed QEMU supports
+it is only known by asking the binary, see C<PVE::QemuServer::Helpers::kvm_machine_types()>.
+
+=cut
+
+sub is_unversioned_machine_type {
+    my ($machine_type) = @_;
+
+    return $machine_type !~ $known_machine_family_re;
+}
+
 =head3 machine_base_type
 
     my $base_type = machine_base_type($machine_type);
 
 Returns the base type of the machine, currently either C<i440fx>, C<q35>, C<virt> or
-C<s390-ccw-virtio>. A value must be passed in. Dies if the machine type cannot be determined, but
-should not happen if it is valid for the C<$machine_fmt> schema.
+C<s390-ccw-virtio>. Unversioned machine types are only supported on s390x, where they belong to the
+C<s390-ccw-virtio> family. A value must be passed in. Dies if the machine type cannot be determined,
+but should not happen if it is valid for the C<$machine_fmt> schema.
 
 =cut
 
@@ -166,6 +196,8 @@ my sub machine_base_type {
     my ($machine_type) = @_;
 
     die "unable to determine machine base type - no value\n" if !$machine_type;
+
+    return 's390-ccw-virtio' if is_unversioned_machine_type($machine_type);
 
     return 'q35' if $machine_type =~ m/q35/;
     return 'i440fx' if $machine_type =~ m/^pc/;
@@ -272,6 +304,11 @@ my sub extract_version_parts {
 # the time anyway.. This explicitly separates pveversion from the machine.
 sub extract_version {
     my ($machine_type, $kvmversion) = @_;
+
+    # An unversioned machine type follows the QEMU binary. For a running instance, that is the
+    # installed one, unless QEMU was upgraded after the start.
+    $kvmversion //= PVE::QemuServer::Helpers::kvm_user_version()
+        if defined($machine_type) && is_unversioned_machine_type($machine_type);
 
     my ($major, $minor, $pve);
     ($major, $minor, $pve) = extract_version_parts($machine_type) if defined($machine_type);
@@ -422,6 +459,9 @@ sub get_vm_machine {
     my $machine_conf = parse_machine($conf->{machine});
     my $machine = $forcemachine || $machine_conf->{type};
 
+    # used as-is, there is neither a version nor a PVE revision to pin
+    return $machine if $machine && is_unversioned_machine_type($machine);
+
     if (!$machine || $machine =~ m/^(?:pc|q35|virt|s390-ccw-virtio)$/) {
         my $kvmversion = PVE::QemuServer::Helpers::kvm_user_version();
         my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
@@ -495,7 +535,7 @@ sub get_power_state_flags {
 
     my $machine = $machine_conf->{type} || default_machine_for_arch($arch);
 
-    if ($machine =~ /^(?:virt|s390-ccw-virtio)/) {
+    if ($machine =~ /^(?:virt|s390-ccw-virtio)/ || is_unversioned_machine_type($machine)) {
         return; # neither ARM64 virt nor s390x machines have a concept of s3/s4
     }
 

@@ -398,6 +398,11 @@ $qemu_server_helpers->mock(
     kvm_device_types => sub {
         return { sclp3270console => 1 };
     },
+    kvm_machine_types => sub {
+        # x-test-sys and x-test-lpar are made-up unversioned machine types
+        my @types = qw(none s390-ccw-virtio s390-ccw-virtio-11.1 x-test-sys x-test-lpar);
+        return { map { $_ => 1 } @types };
+    },
     kvm_user_version => sub {
         return get_test_qemu_version();
     },

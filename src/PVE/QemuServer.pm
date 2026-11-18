@@ -3094,7 +3094,10 @@ sub query_supported_cpu_flags {
 my sub should_disable_smm {
     my ($conf, $vga, $machine) = @_;
 
-    return if $machine =~ m/^(?:virt|s390-ccw-virtio)/; # there is no smm flag that could be disabled
+    # there is no smm flag that could be disabled
+    return
+        if $machine =~ m/^(?:virt|s390-ccw-virtio)/
+        || PVE::QemuServer::Machine::is_unversioned_machine_type($machine);
 
     return
         (!defined($conf->{bios}) || $conf->{bios} eq 'seabios')
@@ -3179,6 +3182,13 @@ sub config_to_command {
     }
 
     my $machine_type = PVE::QemuServer::Machine::get_vm_machine($conf, $forcemachine);
+    my $unversioned_machine = PVE::QemuServer::Machine::is_unversioned_machine_type($machine_type);
+    if ($unversioned_machine) {
+        die "unsupported machine type '$machine_type' for architecture '$arch'\n"
+            if $arch ne 's390x';
+        die "machine type '$machine_type' is not supported by the installed QEMU\n"
+            if !PVE::QemuServer::Helpers::kvm_machine_types($kvm_binary)->{$machine_type};
+    }
     my $machine_version = extract_version($machine_type, $kvmver);
     $kvm //= 1 if is_native_arch($arch);
     die "KVM is required on s390x\n" if $arch eq 's390x' && !$kvm;
@@ -3812,7 +3822,7 @@ sub config_to_command {
     # example not the ones for the CPU if that is forced too, but the next migration target derives
     # the hardware from the version recorded here.
     my $machine_type_min = $machine_type;
-    if (!$forcemachine) {
+    if (!$forcemachine && !$unversioned_machine) {
         $machine_type_min =~ s/\+pve\d+$//;
         $machine_type_min .= "+pve$required_pve_version";
     }
