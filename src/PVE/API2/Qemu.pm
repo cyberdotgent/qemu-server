@@ -765,6 +765,14 @@ my sub create_disks : prototype($$$$$$$$$$$) {
             if (my $source = delete $disk->{'import-from'}) {
                 my $dst_volid;
 
+                # Hercules DASD images (.ckd, .ckd64, .fba): only as the DASD type they are
+                if (my ($ext) = $source =~ m/\.(ckd(?:64)?|fba)$/i) {
+                    my $type = lc($ext) eq 'fba' ? 'fba' : 'ckd';
+                    die "$ds: '$source' is a" . ($type eq 'fba' ? 'n FBA' : ' CKD')
+                        . " DASD image, import it as $type<n>\n"
+                        if ($dasd // '') ne $type;
+                }
+
                 $needs_creation = $live_import;
 
                 my ($source_storage) = PVE::Storage::parse_volume_id($source, 1);
