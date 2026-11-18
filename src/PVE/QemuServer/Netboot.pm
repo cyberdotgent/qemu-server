@@ -85,7 +85,9 @@ our $netboot_desc = {
     format => 'pve-qm-netboot',
     description => "Network boot of an s390x installer from an .ins file. Without 'kernel', the"
         . " files are fetched into 'storage' when the option is set. Not used together with"
-        . " 'ipl'.",
+        . " 'ipl'. The fetched files are named after the URL and shared by all VMs booting the"
+        . " same installer, so neither removing the option nor destroying the VM deletes them;"
+        . " remove 'netboot-<hash>.kernel/.initrd' from the snippets when no longer needed.",
 };
 
 our $netboot_cmdline_desc = {

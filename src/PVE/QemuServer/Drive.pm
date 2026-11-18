@@ -573,7 +573,9 @@ my $ckddesc = {
     type => 'string',
     format => $ckd_fmt,
     description => "Use volume as s390x CKD DASD, an IBM 3390 count-key-data disk (n is 0 to "
-        . ($MAX_CKD_DISKS - 1) . ").",
+        . ($MAX_CKD_DISKS - 1)
+        . "). The channel programs of the guest do synchronous I/O, so CKD volumes on network"
+        . " storage (Ceph RBD, NFS) are slow; prefer local ZFS or LVM storage.",
 };
 PVE::JSONSchema::register_standard_option("pve-qm-ckd", $ckddesc);
 
