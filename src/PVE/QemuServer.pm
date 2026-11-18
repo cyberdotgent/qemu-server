@@ -286,6 +286,7 @@ my $confdesc = {
             'backup',
             'clone',
             'create',
+            'export',
             'import',
             'migrate',
             'rollback',

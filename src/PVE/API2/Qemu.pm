@@ -52,6 +52,7 @@ use PVE::QemuServer::Memory qw(get_current_memory);
 use PVE::QemuServer::MetaInfo;
 use PVE::QemuServer::Netboot;
 use PVE::QemuServer::Network;
+use PVE::QemuServer::OVA;
 use PVE::QemuServer::OVMF;
 use PVE::QemuServer::PCI;
 use PVE::QemuServer::QMPHelpers;
@@ -2147,6 +2148,7 @@ __PACKAGE__->register_method({
             { subdir => 'pending' },
             { subdir => 'ipl-devices' },
             { subdir => 'ccw-devnos' },
+            { subdir => 'export-ova' },
             { subdir => 'status' },
             { subdir => 'unlink' },
             { subdir => 'vncproxy' },
@@ -2402,6 +2404,94 @@ __PACKAGE__->register_method({
             if defined($conf->{pending}->{cipassword});
 
         return PVE::GuestHelpers::config_with_pending_array($conf, $pending_delete_hash);
+    },
+});
+
+__PACKAGE__->register_method({
+    name => 'export_ova',
+    path => '{vmid}/export-ova',
+    method => 'POST',
+    protected => 1,
+    proxyto => 'node',
+    description => "Export a stopped VM as OVA (OVF descriptor, manifest and disk images) into"
+        . " the 'import' content of a storage, from where it can be imported again. Settings"
+        . " OVF has no standard resource types for (VirtIO and s390x CCW devices, machine type,"
+        . " device numbers, ...) are kept in a Proxmox VE section of the OVF descriptor.",
+    permissions => {
+        description => "You need 'VM.Backup' on the VM and 'Datastore.AllocateSpace' on the"
+            . " target storage.",
+        check => [
+            'and',
+            ['perm', '/vms/{vmid}', ['VM.Backup']],
+            ['perm', '/storage/{storage}', ['Datastore.AllocateSpace']],
+        ],
+    },
+    parameters => {
+        additionalProperties => 0,
+        properties => {
+            node => get_standard_option('pve-node'),
+            vmid =>
+                get_standard_option('pve-vmid', { completion => \&PVE::QemuServer::complete_vmid }),
+            storage => get_standard_option(
+                'pve-storage-id',
+                {
+                    description => "Target storage, needs the 'import' content type.",
+                    completion => \&PVE::Storage::complete_storage_enabled,
+                },
+            ),
+            filename => {
+                description =>
+                    "File name of the OVA, '.ova' is appended if missing. Defaults to"
+                    . " the VM name.",
+                type => 'string',
+                pattern => '[a-zA-Z0-9\-\+\=\_][a-zA-Z0-9\-\.\+\=\_]*',
+                maxLength => 200,
+                optional => 1,
+            },
+            format => {
+                description =>
+                    "Format of the disk images in the OVA: compressed streamOptimized"
+                    . " VMDK (the OVA norm), compressed qcow2 or raw. All keep the content byte"
+                    . " for byte.",
+                type => 'string',
+                enum => PVE::QemuServer::OVA::disk_formats(),
+                default => 'vmdk',
+                optional => 1,
+            },
+        },
+    },
+    returns => {
+        type => 'string',
+        description => "The task ID.",
+    },
+    code => sub {
+        my ($param) = @_;
+
+        my $rpcenv = PVE::RPCEnvironment::get();
+        my $authuser = $rpcenv->get_user();
+
+        my $node = extract_param($param, 'node');
+        my $vmid = extract_param($param, 'vmid');
+        my $storeid = extract_param($param, 'storage');
+
+        my $storecfg = PVE::Storage::config();
+        my $scfg = PVE::Storage::storage_check_enabled($storecfg, $storeid, $node);
+        die "storage '$storeid' does not have the 'import' content type\n"
+            if !$scfg->{content}->{import};
+
+        my $conf = PVE::QemuConfig->load_config($vmid);
+        PVE::QemuConfig->check_lock($conf);
+        die "VM $vmid is running - stop it first, an export needs consistent disks\n"
+            if PVE::QemuServer::Helpers::vm_running_locally($vmid);
+        my $name = PVE::QemuServer::OVA::ova_name($vmid, $conf, $param->{filename});
+        die "'$storeid:import/$name.ova' already exists\n"
+            if eval { -e PVE::Storage::path($storecfg, "$storeid:import/$name.ova") };
+
+        my $worker = sub {
+            PVE::QemuServer::OVA::export_ova($storecfg, $vmid, $storeid, $param);
+        };
+
+        return $rpcenv->fork_worker('qmexportova', $vmid, $authuser, $worker);
     },
 });
 
