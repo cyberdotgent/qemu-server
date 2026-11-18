@@ -3061,7 +3061,8 @@ my $update_vm_api = sub {
             }
         }
 
-        foreach my $opt (keys %$param) { # add/change
+        # 'ipl' last, it is checked against the devices added in the same call
+        foreach my $opt (sort { ($a eq 'ipl') <=> ($b eq 'ipl') } keys %$param) { # add/change
             $modified->{$opt} = 1;
             $conf = PVE::QemuConfig->load_config($vmid); # update/reload
             next
