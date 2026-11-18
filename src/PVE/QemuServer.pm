@@ -3577,6 +3577,11 @@ sub config_to_command {
         # QEMU loads the kernel instead of an IPL, a re-IPL by the guest uses its IPL device
         push $devices->@*, PVE::QemuServer::Netboot::get_command_args($storecfg, $conf)->@*;
         log_warn("ignoring 'ipl' for the network boot") if $conf->{ipl};
+    } elsif ($arch eq 's390x' && !$conf->{ipl}) {
+        ($bootorder, my $device) = PVE::QemuServer::IPL::bootorder_ipl_device(
+            $conf, $storecfg, $kvm_binary, $bootorder,
+        );
+        push $machineFlags->@*, "ipl=$device->{devno}" if $device;
     } elsif ($conf->{ipl}) {
         my ($ipl, $device) = PVE::QemuServer::IPL::check_ipl_config($conf, $storecfg, $kvm_binary);
         my $loadparm = length($ipl->{loadparm} // '') ? $ipl->{loadparm} : undef;

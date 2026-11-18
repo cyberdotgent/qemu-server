@@ -165,4 +165,29 @@ sub ipl_with_bootindex {
     return $device->{'ipl-method'} eq 'firmware';
 }
 
+# The boot order of an s390x VM without 'ipl': devices with the 'ccw' IPL method, such as DASDs,
+# have no bootindex. If one comes first in the boot order, the VM IPLs from it, like with 'ipl',
+# and no device gets a bootindex (QEMU refuses them with a channel-program IPL). Returns the boot
+# order without those devices and the device to IPL from, if any.
+sub bootorder_ipl_device {
+    my ($conf, $storecfg, $kvm_binary, $bootorder) = @_;
+
+    my @keys = sort { $bootorder->{$a} <=> $bootorder->{$b} } keys %$bootorder;
+    # only DASDs and tape drives can IPL by channel program, no need to ask QEMU otherwise
+    return ($bootorder, undef) if !grep { m/^(?:fba|ckd|tape)\d+$/ } @keys;
+
+    my $devices = { map { $_->{key} => $_ } get_ipl_devices($conf, $storecfg, $kvm_binary)->@* };
+    # DASDs and tape drives never have a bootindex, also when the QEMU binary cannot IPL them
+    my $no_bootindex = sub {
+        my ($key) = @_;
+        my $device = $devices->{$key};
+        return $device ? !ipl_with_bootindex($device) : $key =~ m/^(?:fba|ckd|tape)\d+$/;
+    };
+
+    my $first = (grep { $devices->{$_} } @keys)[0];
+    return ({}, $devices->{$first}) if defined($first) && $no_bootindex->($first);
+
+    return ({ map { $_ => $bootorder->{$_} } grep { !$no_bootindex->($_) } @keys }, undef);
+}
+
 1;
