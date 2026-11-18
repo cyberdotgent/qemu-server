@@ -15,6 +15,7 @@ SOURCES=Agent.pm	\
 	DriveDevice.pm	\
 	Helpers.pm	\
 	ImportDisk.pm	\
+	IPL.pm		\
 	Machine.pm	\
 	Memory.pm	\
 	MetaInfo.pm	\

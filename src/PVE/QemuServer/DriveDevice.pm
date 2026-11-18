@@ -193,6 +193,8 @@ sub print_drivedevice_full {
     }
 
     $device .= ",bootindex=$drive->{bootindex}" if $drive->{bootindex};
+    # s390x load parameter of the IPL device, needs the bootindex before it
+    $device .= ",loadparm=$drive->{loadparm}" if defined($drive->{loadparm});
 
     if (my $serial = $drive->{serial}) {
         $serial = _escape_qemu_arg_value(URI::Escape::uri_unescape($serial));

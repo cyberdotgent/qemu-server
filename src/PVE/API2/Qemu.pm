@@ -1112,6 +1112,20 @@ my sub check_vm_create_dir_perm {
     return 1;
 }
 
+# The config as it will be once the pending changes are applied.
+my $get_config_with_pending = sub {
+    my ($conf) = @_;
+
+    my $res = { $conf->%* };
+    delete $res->@{qw(pending snapshots)};
+    $res->{$_} = $conf->{pending}->{$_}
+        for grep { $_ ne 'delete' } keys(($conf->{pending} // {})->%*);
+    my $delete = PVE::QemuConfig->parse_pending_delete($conf->{pending}->{delete});
+    delete $res->{$_} for keys $delete->%*;
+
+    return $res;
+};
+
 my $check_vm_modify_config_perm = sub {
     my ($rpcenv, $authuser, $vmid, $pool, $key_list) = @_;
 
@@ -1695,6 +1709,8 @@ __PACKAGE__->register_method({
                         $conf->{boot} = PVE::QemuServer::print_bootorder($devs);
                     }
 
+                    PVE::QemuServer::IPL::check_ipl_config($conf, $storecfg) if $conf->{ipl};
+
                     my $vga = PVE::QemuServer::parse_vga($conf->{vga});
                     PVE::QemuServer::assert_clipboard_config($vga);
 
@@ -1862,6 +1878,7 @@ __PACKAGE__->register_method({
             { subdir => 'config' },
             { subdir => 'cloudinit' },
             { subdir => 'pending' },
+            { subdir => 'ipl-devices' },
             { subdir => 'status' },
             { subdir => 'unlink' },
             { subdir => 'vncproxy' },
@@ -2117,6 +2134,67 @@ __PACKAGE__->register_method({
             if defined($conf->{pending}->{cipassword});
 
         return PVE::GuestHelpers::config_with_pending_array($conf, $pending_delete_hash);
+    },
+});
+
+__PACKAGE__->register_method({
+    name => 'ipl_devices',
+    path => '{vmid}/ipl-devices',
+    method => 'GET',
+    proxyto => 'node',
+    description => "Get the devices an s390x VM can IPL (boot) from, as candidates for the"
+        . " 'ipl' option. Includes pending changes.",
+    permissions => {
+        check => ['perm', '/vms/{vmid}', ['VM.Audit']],
+    },
+    parameters => {
+        additionalProperties => 0,
+        properties => {
+            node => get_standard_option('pve-node'),
+            vmid =>
+                get_standard_option('pve-vmid', { completion => \&PVE::QemuServer::complete_vmid }),
+        },
+    },
+    returns => {
+        type => 'array',
+        items => {
+            type => 'object',
+            properties => {
+                key => {
+                    description => "Configuration key of the device.",
+                    type => 'string',
+                },
+                type => {
+                    description => "The QEMU device type of the device.",
+                    type => 'string',
+                },
+                devno => {
+                    description => "The CCW device number that IPLs (for SCSI devices, the one"
+                        . " of their virtio-scsi-ccw controller).",
+                    type => 'string',
+                },
+                description => {
+                    description => "Human readable description of the device.",
+                    type => 'string',
+                },
+            },
+        },
+    },
+    code => sub {
+        my ($param) = @_;
+
+        my $conf = PVE::QemuConfig->load_config($param->{vmid});
+        $conf = $get_config_with_pending->($conf);
+
+        die "only s390x VMs have IPL devices\n"
+            if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
+
+        my $kvm_binary = PVE::QemuServer::Helpers::get_command_for_arch('s390x');
+        my $devices = PVE::QemuServer::IPL::get_ipl_devices(
+            $conf, PVE::Storage::config(), $kvm_binary,
+        );
+
+        return [map { { $_->%{qw(key type devno description)} } } $devices->@*];
     },
 });
 
@@ -2770,6 +2848,10 @@ my $update_vm_api = sub {
                         PVE::QemuConfig->add_to_pending_delete($conf, "bootdisk")
                             if $conf->{bootdisk};
                     }
+                } elsif ($opt eq 'ipl') {
+                    PVE::QemuServer::IPL::check_ipl_config(
+                        $get_config_with_pending->($conf), $storecfg,
+                    );
                 }
             }
             PVE::QemuConfig->remove_from_pending_delete($conf, $opt);

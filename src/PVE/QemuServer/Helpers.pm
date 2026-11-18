@@ -152,6 +152,17 @@ sub kvm_machine_types {
     return $types;
 }
 
+# The CCW device types that can IPL: virtio block, network and SCSI devices in QEMU, DASD, tape
+# and passthrough devices in QEMU-mod.
+# FIXME: ask the QEMU binary instead, once it reports which device types can IPL
+my $ipl_device_types = { map { $_ => 1 }
+    qw(virtio-blk-ccw virtio-net-ccw virtio-scsi-ccw eckd-ccw fba-ccw 3590-ccw vfio-ccw) };
+
+sub kvm_device_can_ipl {
+    my ($binary, $type) = @_;
+    return $ipl_device_types->{$type} ? 1 : 0;
+}
+
 # Paths and directories
 
 # FIXME: MAJOR VERSION: use /run/qemu-server everywhere instead of mixing /run and /var/run and rely
@@ -215,7 +226,12 @@ sub vm_pidfile_name {
 sub get_s390x_consoles {
     my ($conf) = @_;
 
-    return ($conf->{ostype} // 'other') =~ m/^l\d\d$/ ? ['sclp'] : ['sclplm', '3270'];
+    return is_linux_ostype($conf->{ostype}) ? ['sclp'] : ['sclplm', '3270'];
+}
+
+sub is_linux_ostype {
+    my ($ostype) = @_;
+    return ($ostype // 'other') =~ m/^l\d\d$/;
 }
 
 sub console_socket {

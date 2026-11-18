@@ -85,6 +85,7 @@ use PVE::QemuServer::Drive qw(
     get_tpmstate_size
 );
 use PVE::QemuServer::DriveDevice qw(print_drivedevice_full scsihw_infos);
+use PVE::QemuServer::IPL;
 use PVE::QemuServer::Machine;
 use PVE::QemuServer::Memory qw(get_current_memory);
 use PVE::QemuServer::MetaInfo;
@@ -411,6 +412,13 @@ EODESC
         description =>
             "Specify guest boot order. Use the 'order=' sub-property as usage with no"
             . " key or 'legacy=' is deprecated.",
+    },
+    ipl => {
+        optional => 1,
+        type => 'string',
+        format => 'pve-qm-ipl',
+        description => "The device to IPL (boot) an s390x VM from, with an optional load"
+            . " parameter. Only used for OS types other than Linux, instead of the boot order.",
     },
     bootdisk => {
         optional => 1,
@@ -1341,6 +1349,7 @@ sub print_netdevice_full {
     }
 
     $tmpstr .= ",bootindex=$net->{bootindex}" if $net->{bootindex};
+    $tmpstr .= ",loadparm=$net->{loadparm}" if defined($net->{loadparm}); # s390x IPL device
 
     my $mtu = $net->{mtu};
 
@@ -3361,6 +3370,28 @@ sub config_to_command {
 
     my $bootorder = device_bootorder($conf);
 
+    # Mainframe operating systems IPL from one device, instead of the boot order.
+    my $ipl_loadparm = {};
+    if ($conf->{ipl}) {
+        if (PVE::QemuServer::Helpers::is_linux_ostype($conf->{ostype})) {
+            log_warn("ignoring 'ipl', VMs with a Linux OS type boot with the boot order");
+        } else {
+            my ($ipl, $device) =
+                PVE::QemuServer::IPL::check_ipl_config($conf, $storecfg, $kvm_binary);
+            my $loadparm = length($ipl->{loadparm} // '') ? $ipl->{loadparm} : undef;
+            if (PVE::QemuServer::IPL::ipl_with_bootindex($device)) {
+                $bootorder = { $device->{key} => 1 };
+                $ipl_loadparm->{ $device->{key} } = $loadparm if defined($loadparm);
+            } else {
+                # a channel-program IPL, QEMU refuses bootindex properties with it and the
+                # loadparm of a device needs one, so use the one of the machine
+                $bootorder = {};
+                push $machineFlags->@*, "ipl=$device->{devno}";
+                push $machineFlags->@*, "loadparm=$loadparm" if defined($loadparm);
+            }
+        }
+    }
+
     # host pci device passthrough
     my ($kvm_off, $gpu_passthrough, $legacy_igd, $pci_devices) =
         PVE::QemuServer::PCI::print_hostpci_devices(
@@ -3657,6 +3688,7 @@ sub config_to_command {
             $use_virtio = 1 if $ds =~ m/^virtio/;
 
             $drive->{bootindex} = $bootorder->{$ds} if $bootorder->{$ds};
+            $drive->{loadparm} = $ipl_loadparm->{$ds} if defined($ipl_loadparm->{$ds});
 
             if ($drive->{interface} eq 'virtio') {
                 push @$cmd, '-object', "iothread,id=iothread-$ds" if $drive->{iothread};
@@ -3773,6 +3805,7 @@ sub config_to_command {
         $use_virtio = 1 if $d->{model} eq 'virtio';
 
         $d->{bootindex} = $bootorder->{$netname} if $bootorder->{$netname};
+        $d->{loadparm} = $ipl_loadparm->{$netname} if defined($ipl_loadparm->{$netname});
 
         my $netdevfull = print_netdev_full($vmid, $conf, $arch, $d, $netname);
         push @$devices, '-netdev', $netdevfull;
