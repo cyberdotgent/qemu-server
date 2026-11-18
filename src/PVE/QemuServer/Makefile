@@ -16,6 +16,7 @@ SOURCES=Agent.pm	\
 	Helpers.pm	\
 	ImportDisk.pm	\
 	IPL.pm		\
+	Netboot.pm	\
 	Machine.pm	\
 	Memory.pm	\
 	MetaInfo.pm	\
@@ -30,6 +31,7 @@ SOURCES=Agent.pm	\
 	RunState.pm	\
 	Snapshot.pm	\
 	StateFile.pm	\
+	Tape.pm		\
 	USB.pm		\
 	Virtiofs.pm	\
 	VolumeChain.pm

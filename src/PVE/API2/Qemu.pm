@@ -48,12 +48,14 @@ use PVE::QemuServer::Monitor qw(mon_cmd vm_qmp_peer);
 use PVE::QemuServer::Machine;
 use PVE::QemuServer::Memory qw(get_current_memory);
 use PVE::QemuServer::MetaInfo;
+use PVE::QemuServer::Netboot;
 use PVE::QemuServer::Network;
 use PVE::QemuServer::OVMF;
 use PVE::QemuServer::PCI;
 use PVE::QemuServer::QMPHelpers;
 use PVE::QemuServer::RNG;
 use PVE::QemuServer::RunState;
+use PVE::QemuServer::Tape;
 use PVE::QemuServer::USB;
 use PVE::QemuServer::Virtiofs qw(max_virtiofs);
 use PVE::QemuServer::DBusVMState;
@@ -1112,6 +1114,53 @@ my sub check_vm_create_dir_perm {
     return 1;
 }
 
+# The storage privileges for the install media of s390x VMs: tape images, and fetching the files of
+# a network boot, which also downloads from an arbitrary URL on the node like 'download-url'.
+my sub check_install_media_access {
+    my ($rpcenv, $authuser, $storecfg, $vmid, $node, $param) = @_;
+
+    for my $key (PVE::QemuServer::Tape::valid_tape_keys()) {
+        next if !$param->{$key};
+        my $tape = eval { PVE::QemuServer::Tape::parse_tape($param->{$key}) };
+        raise_param_exc({ $key => $@ }) if $@;
+        next if $tape->{file} eq 'none';
+        PVE::Storage::check_volume_access(
+            $rpcenv, $authuser, $storecfg, $vmid, $tape->{file}, 'iso',
+        );
+    }
+
+    if ($param->{netboot}) {
+        my $netboot = eval { PVE::QemuServer::Netboot::parse_netboot($param->{netboot}) };
+        raise_param_exc({ netboot => $@ }) if $@;
+        if (PVE::QemuServer::Netboot::needs_fetch($netboot)) {
+            my $storeid = $netboot->{storage}
+                or raise_param_exc({ netboot => "'storage' is required to fetch the files" });
+            $rpcenv->check($authuser, "/storage/$storeid", ['Datastore.AllocateTemplate']);
+            $rpcenv->check($authuser, "/nodes/$node", ['Sys.Audit', 'Sys.Modify']);
+        } else {
+            for my $volid (grep { defined } $netboot->@{qw(kernel initrd)}) {
+                PVE::Storage::check_volume_access(
+                    $rpcenv, $authuser, $storecfg, $vmid, $volid, 'snippets',
+                );
+            }
+        }
+    }
+
+    return;
+}
+
+# Fetch the files of a 'netboot' value that needs it. Returns the new value and the kernel command
+# line of the installer, or nothing if there is nothing to fetch.
+my sub fetch_netboot {
+    my ($storecfg, $value) = @_;
+
+    my $netboot = PVE::QemuServer::Netboot::parse_netboot($value);
+    return if !PVE::QemuServer::Netboot::needs_fetch($netboot);
+
+    my ($new, $cmdline) = PVE::QemuServer::Netboot::fetch($storecfg, $netboot);
+    return (PVE::QemuServer::Netboot::print_netboot($new), $cmdline);
+}
+
 # The config as it will be once the pending changes are applied.
 my $get_config_with_pending = sub {
     my ($conf) = @_;
@@ -1166,6 +1215,13 @@ my $check_vm_modify_config_perm = sub {
             } else {
                 $rpcenv->check_vm_perm($authuser, $vmid, $pool, ['VM.Config.Cloudinit']);
             }
+        } elsif (
+            PVE::QemuServer::Tape::is_tape_key($opt)
+            || $opt eq 'netboot'
+            || $opt eq 'netboot-cmdline'
+        ) {
+            # install media of s390x VMs, storage privileges are checked separately
+            $rpcenv->check_vm_perm($authuser, $vmid, $pool, ['VM.Config.CDROM']);
         } elsif ($opt eq 'vmstate') {
             # the user needs Disk and PowerMgmt privileges to change the vmstate
             # also needs privileges on the storage, that will be checked later
@@ -1516,6 +1572,7 @@ __PACKAGE__->register_method({
             check_rng_perm($rpcenv, $authuser, $vmid, $pool, 'rng0', $param->{rng0})
                 if $param->{rng0};
             check_vm_create_dir_perm($rpcenv, $authuser, $vmid, $pool, $param);
+            check_install_media_access($rpcenv, $authuser, $storecfg, $vmid, $node, $param);
 
             PVE::QemuServer::check_bridge_access($rpcenv, $authuser, $param);
             &$check_cpu_model_access($rpcenv, $authuser, $param);
@@ -1718,6 +1775,16 @@ __PACKAGE__->register_method({
 
                     PVE::QemuServer::IPL::check_ipl_config($conf, $storecfg) if $conf->{ipl};
                     PVE::QemuServer::assert_s390x_machine_devices($conf);
+                    PVE::QemuServer::Tape::get_tapes($conf); # checks the device numbers
+
+                    if ($conf->{netboot}) {
+                        my ($netboot, $cmdline) = fetch_netboot($storecfg, $conf->{netboot});
+                        if (defined($netboot)) {
+                            $conf->{netboot} = $netboot;
+                            $conf->{'netboot-cmdline'} = $cmdline
+                                if !defined($conf->{'netboot-cmdline'}) && length($cmdline);
+                        }
+                    }
 
                     my $vga = PVE::QemuServer::parse_vga($conf->{vga});
                     PVE::QemuServer::assert_clipboard_config($vga);
@@ -2492,6 +2559,7 @@ my $update_vm_api = sub {
     &$check_storage_access(
         $rpcenv, $authuser, $storecfg, $vmid, $param, undef, $extraction_storage,
     );
+    check_install_media_access($rpcenv, $authuser, $storecfg, $vmid, $node, $param);
 
     PVE::QemuServer::check_bridge_access($rpcenv, $authuser, $param);
 
@@ -2808,6 +2876,24 @@ my $update_vm_api = sub {
                         { $opt => $conf->{$opt} },
                     );
                 }
+                $conf->{pending}->{$opt} = $param->{$opt};
+            } elsif ($opt eq 'netboot') {
+                my ($netboot, $cmdline) = fetch_netboot($storecfg, $param->{$opt});
+                if (defined($netboot)) {
+                    $param->{$opt} = $netboot;
+                    if (!defined($param->{'netboot-cmdline'})) {
+                        if (length($cmdline)) {
+                            $conf->{pending}->{'netboot-cmdline'} = $cmdline;
+                            PVE::QemuConfig->remove_from_pending_delete($conf, 'netboot-cmdline');
+                        } elsif (defined($conf->{'netboot-cmdline'})) {
+                            PVE::QemuConfig->add_to_pending_delete($conf, 'netboot-cmdline');
+                        }
+                    }
+                }
+                $conf->{pending}->{$opt} = $param->{$opt};
+            } elsif (PVE::QemuServer::Tape::is_tape_key($opt)) {
+                PVE::QemuServer::Tape::get_tapes(
+                    { $get_config_with_pending->($conf)->%*, $opt => $param->{$opt} });
                 $conf->{pending}->{$opt} = $param->{$opt};
             } elsif ($opt eq 'machine') {
                 my $machine_conf = PVE::QemuServer::Machine::parse_machine($param->{$opt});

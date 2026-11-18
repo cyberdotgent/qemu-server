@@ -13,6 +13,7 @@ use PVE::QemuServer::DriveDevice qw(scsihw_infos);
 use PVE::QemuServer::Helpers;
 use PVE::QemuServer::Network;
 use PVE::QemuServer::PCI qw(print_pci_addr);
+use PVE::QemuServer::Tape;
 
 my $ipl_fmt = {
     device => {
@@ -20,8 +21,8 @@ my $ipl_fmt = {
         type => 'string',
         pattern => '[a-z]+\d+',
         format_description => 'device',
-        description => "The device to IPL from, the key of a disk, CD-ROM drive or network"
-            . " device of the VM whose QEMU device can IPL, for example 'virtio0'.",
+        description => "The device to IPL from, the key of a disk, CD-ROM drive, tape drive or"
+            . " network device of the VM whose QEMU device can IPL, for example 'virtio0'.",
     },
     loadparm => {
         optional => 1,
@@ -86,6 +87,18 @@ sub get_ipl_devices {
         $entry->{key} = $key;
         $entry->{description} = ($cdrom ? 'CD-ROM' : 'disk') . " $drive->{file}";
         push @$res, $entry;
+    }
+
+    for my $key (PVE::QemuServer::Tape::valid_tape_keys()) {
+        next if !$conf->{$key};
+        my $tape = eval { PVE::QemuServer::Tape::parse_tape($conf->{$key}) } or next;
+        push @$res,
+            {
+                key => $key,
+                type => '3590-ccw',
+                devno => PVE::QemuServer::Tape::get_devno($key, $tape),
+                description => "tape drive, " . ($tape->{file} eq 'none' ? 'empty' : $tape->{file}),
+            };
     }
 
     for my $key (sort keys %$conf) {

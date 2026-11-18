@@ -90,6 +90,7 @@ use PVE::QemuServer::Machine;
 use PVE::QemuServer::Memory qw(get_current_memory);
 use PVE::QemuServer::MetaInfo;
 use PVE::QemuServer::Monitor qw(mon_cmd vm_qmp_peer);
+use PVE::QemuServer::Netboot;
 use PVE::QemuServer::Network;
 use PVE::QemuServer::OVMF;
 use PVE::QemuServer::PCI qw(print_pci_addr print_pcie_addr parse_hostpci get_pci_bridges);
@@ -101,6 +102,7 @@ use PVE::QemuServer::QSD;
 use PVE::QemuServer::RNG qw(parse_rng print_rng_device_commandline print_rng_object_commandline);
 use PVE::QemuServer::RunState;
 use PVE::QemuServer::StateFile;
+use PVE::QemuServer::Tape;
 use PVE::QemuServer::USB;
 use PVE::QemuServer::Virtiofs qw(max_virtiofs start_all_virtiofsd);
 use PVE::QemuServer::VolumeChain;
@@ -420,6 +422,8 @@ EODESC
         description => "The device to IPL (boot) an s390x VM from, with an optional load"
             . " parameter. Only used for OS types other than Linux, instead of the boot order.",
     },
+    netboot => $PVE::QemuServer::Netboot::netboot_desc,
+    'netboot-cmdline' => $PVE::QemuServer::Netboot::netboot_cmdline_desc,
     bootdisk => {
         optional => 1,
         type => 'string',
@@ -969,6 +973,10 @@ for my $key (keys %{$PVE::QemuServer::Drive::drivedesc_hash}) {
 
 for (my $i = 0; $i < $PVE::QemuServer::USB::MAX_USB_DEVICES; $i++) {
     $confdesc->{"usb$i"} = $PVE::QemuServer::USB::usbdesc;
+}
+
+for my $key (PVE::QemuServer::Tape::valid_tape_keys()) {
+    $confdesc->{$key} = $PVE::QemuServer::Tape::tape_desc;
 }
 
 my $boot_fmt = {
@@ -3503,7 +3511,12 @@ sub config_to_command {
 
     # Mainframe operating systems IPL from one device, instead of the boot order.
     my $ipl_loadparm = {};
-    if ($conf->{ipl}) {
+    if ($conf->{netboot} && !$is_template) {
+        die "netboot: only supported on s390x\n" if $arch ne 's390x';
+        # QEMU loads the kernel instead of an IPL, a re-IPL by the guest uses its IPL device
+        push $devices->@*, PVE::QemuServer::Netboot::get_command_args($storecfg, $conf)->@*;
+        log_warn("ignoring 'ipl' for the network boot") if $conf->{ipl};
+    } elsif ($conf->{ipl}) {
         if (PVE::QemuServer::Helpers::is_linux_ostype($conf->{ostype})) {
             log_warn("ignoring 'ipl', VMs with a Linux OS type boot with the boot order");
         } else {
@@ -3555,6 +3568,11 @@ sub config_to_command {
             }
         }
     }
+
+    # tape drives of s390x VMs
+    push $devices->@*,
+        PVE::QemuServer::Tape::get_command_args($storecfg, $conf, $arch, $kvm_binary)->@*
+        if !$is_template;
 
     # serial devices
     my $s390x_console_bus = 0;
@@ -4949,6 +4967,13 @@ sub vmconfig_hotplug_pending {
                     $arch,
                     $machine_type->(),
                 );
+            } elsif (PVE::QemuServer::Tape::is_tape_key($opt)) {
+                # media changes do not need hotplug, everything else waits for a restart
+                die "skip\n" if !defined($conf->{$opt});
+                die "skip\n"
+                    if !PVE::QemuServer::Tape::change_medium(
+                        $storecfg, $vmid, $opt, $conf->{$opt}, $value,
+                    );
             } elsif (is_valid_drivename($opt)) {
                 die "skip\n" if $opt eq 'efidisk0' || $opt eq 'tpmstate0';
                 # some changes can be done without hotplug
@@ -6039,6 +6064,24 @@ sub vm_start_nolock {
 
     PVE::QemuServer::RunState::create_cleanup_flag($vmid);
 
+    # A network boot is used once by default: the installer usually sets the re-IPL device of the
+    # guest to the installed system, which QEMU honors for reboots, but not when started again.
+    if (
+        $conf->{netboot}
+        && !$statefile
+        && !$migratedfrom
+        && PVE::QemuServer::Netboot::is_once($conf)
+    ) {
+        eval {
+            my $current = PVE::QemuConfig->load_config($vmid);
+            PVE::QemuConfig->add_to_pending_delete($current, $_)
+                for grep { defined($current->{$_}) } qw(netboot netboot-cmdline);
+            PVE::QemuConfig->write_config($vmid, $current);
+            print "the network boot is removed at the next start\n";
+        };
+        warn "could not mark the network boot for removal - $@" if $@;
+    }
+
     # re-reserve all PCI IDs now that we can know the actual VM PID
     my $pid = PVE::QemuServer::Helpers::vm_running_locally($vmid);
     eval { PVE::QemuServer::PCI::reserve_pci_usage($pci_reserve_list, $vmid, undef, $pid) };
@@ -6304,6 +6347,10 @@ sub get_current_vm_volumes {
             }
         },
     );
+
+    # the install media of s390x VMs
+    push $volumes->@*, PVE::QemuServer::Tape::get_volumes($conf)->@*;
+    push $volumes->@*, PVE::QemuServer::Netboot::get_volumes($conf)->@*;
 
     return $volumes;
 }

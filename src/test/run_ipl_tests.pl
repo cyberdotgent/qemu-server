@@ -101,6 +101,43 @@ is_deeply(
     'IPL devices: virtio and SCSI disks and CD-ROMs, virtio NICs; no cloud-init, EFI, IDE or e1000',
 );
 
+is_deeply(
+    PVE::QemuServer::IPL::get_ipl_devices(
+        {
+            arch => 's390x',
+            scsi0 => 'local:8006/vm-8006-disk-1.qcow2,size=8G',
+            tape0 => 'local:iso/SYSTEM.AWS',
+            tape2 => 'none,devno=0.0.0590',
+        },
+        undef,
+        '/usr/bin/kvm',
+    ),
+    [
+        {
+            key => 'scsi0',
+            type => 'scsi-hd',
+            'ipl-method' => 'firmware',
+            devno => 'fe.0.0005',
+            description => 'disk local:8006/vm-8006-disk-1.qcow2',
+        },
+        {
+            key => 'tape0',
+            type => '3590-ccw',
+            'ipl-method' => 'ccw',
+            devno => 'fe.0.0580',
+            description => 'tape drive, local:iso/SYSTEM.AWS',
+        },
+        {
+            key => 'tape2',
+            type => '3590-ccw',
+            'ipl-method' => 'ccw',
+            devno => 'fe.0.0590',
+            description => 'tape drive, empty',
+        },
+    ],
+    'IPL devices: tape drives, also empty ones; virtio SCSI controller by default',
+);
+
 ok(
     PVE::QemuServer::IPL::ipl_with_bootindex({ 'ipl-method' => 'firmware' }),
     "IPL method 'firmware' uses bootindex",
