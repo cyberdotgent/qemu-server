@@ -60,7 +60,7 @@ my $machine_fmt = {
         description => "Specifies the QEMU machine type.",
         type => 'string',
         pattern =>
-            '(pc|pc(-i440fx)?-\d+(\.\d+)+(\+pve\d+)?(\.pxe)?|q35|pc-q35-\d+(\.\d+)+(\+pve\d+)?(\.pxe)?|virt(?:-\d+(\.\d+)+)?(\+pve\d+)?)',
+            '(pc|pc(-i440fx)?-\d+(\.\d+)+(\+pve\d+)?(\.pxe)?|q35|pc-q35-\d+(\.\d+)+(\+pve\d+)?(\.pxe)?|virt(?:-\d+(\.\d+)+)?(\+pve\d+)?|s390-ccw-virtio(?:-\d+(\.\d+)+)?(\+pve\d+)?)',
         maxLength => 40,
         format_description => 'machine type',
         optional => 1,
@@ -126,6 +126,7 @@ sub print_machine {
 my $default_machines = {
     x86_64 => 'pc',
     aarch64 => 'virt',
+    s390x => 's390-ccw-virtio',
 };
 
 sub default_machine_for_arch {
@@ -155,9 +156,9 @@ sub assert_valid_machine_property {
 
     my $base_type = machine_base_type($machine_type);
 
-Returns the base type of the machine, currently either C<i440fx>, C<q35> or C<virt>. A value must be
-passed in. Dies if the machine type cannot be determined, but should not happen if it is valid for
-the C<$machine_fmt> schema.
+Returns the base type of the machine, currently either C<i440fx>, C<q35>, C<virt> or
+C<s390-ccw-virtio>. A value must be passed in. Dies if the machine type cannot be determined, but
+should not happen if it is valid for the C<$machine_fmt> schema.
 
 =cut
 
@@ -169,6 +170,7 @@ my sub machine_base_type {
     return 'q35' if $machine_type =~ m/q35/;
     return 'i440fx' if $machine_type =~ m/^pc/;
     return 'virt' if $machine_type =~ m/^virt/;
+    return 's390-ccw-virtio' if $machine_type =~ m/^s390-ccw-virtio/;
 
     die "unable to determine machine base type '$machine_type'\n";
 }
@@ -190,6 +192,7 @@ my $supported_machine_flags = {
         hpet => 1,
     },
     virt => {},
+    's390-ccw-virtio' => {},
 };
 
 =head3 machine_supports_flag
@@ -257,7 +260,7 @@ my sub extract_version_parts {
     my ($machine_type) = @_;
 
     if ($machine_type =~
-        m/^(?:pc(?:-i440fx|-q35)?|virt)-(\d+)\.(\d+)(?:\.(\d+))?(?:\+pve(\d+))?(?:\.pxe)?/
+        m/^(?:pc(?:-i440fx|-q35)?|virt|s390-ccw-virtio)-(\d+)\.(\d+)(?:\.(\d+))?(?:\+pve(\d+))?(?:\.pxe)?/
     ) {
         return ($1, $2, $4);
     }
@@ -419,7 +422,7 @@ sub get_vm_machine {
     my $machine_conf = parse_machine($conf->{machine});
     my $machine = $forcemachine || $machine_conf->{type};
 
-    if (!$machine || $machine =~ m/^(?:pc|q35|virt)$/) {
+    if (!$machine || $machine =~ m/^(?:pc|q35|virt|s390-ccw-virtio)$/) {
         my $kvmversion = PVE::QemuServer::Helpers::kvm_user_version();
         my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
         $machine ||= default_machine_for_arch($arch);
@@ -492,8 +495,8 @@ sub get_power_state_flags {
 
     my $machine = $machine_conf->{type} || default_machine_for_arch($arch);
 
-    if ($machine =~ /^virt/) {
-        return; # virt machines are normally ARM64 ones which have no concept of s3/s4
+    if ($machine =~ /^(?:virt|s390-ccw-virtio)/) {
+        return; # neither ARM64 virt nor s390x machines have a concept of s3/s4
     }
 
     my $object = ($machine =~ m/q35/) ? "ICH9-LPC" : "PIIX4_PM";

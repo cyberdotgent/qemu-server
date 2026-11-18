@@ -3078,7 +3078,7 @@ sub query_supported_cpu_flags {
 my sub should_disable_smm {
     my ($conf, $vga, $machine) = @_;
 
-    return if $machine =~ m/^virt/; # there is no smm flag that could be disabled
+    return if $machine =~ m/^(?:virt|s390-ccw-virtio)/; # there is no smm flag that could be disabled
 
     return
         (!defined($conf->{bios}) || $conf->{bios} eq 'seabios')
