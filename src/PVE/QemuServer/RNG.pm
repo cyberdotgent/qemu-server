@@ -100,7 +100,9 @@ sub print_rng_device_commandline {
 
     my $rng_addr = print_pci_addr($id, $arch);
 
-    return "virtio-rng-pci,rng=$id$limiter_str$rng_addr";
+    my $model = $arch eq 's390x' ? 'virtio-rng-ccw' : 'virtio-rng-pci';
+
+    return "$model,rng=$id$limiter_str$rng_addr";
 }
 
 sub print_rng_object_commandline {

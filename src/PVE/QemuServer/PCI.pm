@@ -314,6 +314,10 @@ sub print_pci_addr {
 
     my $map = get_pci_addr_map();
     if (my $d = $get_addr_mapping_from_id->($map, $id)) {
+        # On s390x, the virtio devices are CCW devices. Derive their device number from the PCI
+        # slot, so it is just as stable.
+        return sprintf(",devno=fe.0.%04x", $d->{bus} * 32 + hex($d->{addr})) if $arch eq 's390x';
+
         # Using same bus slots on all HW, so we need to check special cases here. For aarch64, the
         # virt machine has an initial pcie.0. The other pci bridges that get added are called pci.N.
         my $busname = $arch eq 'aarch64' && $d->{bus} eq 0 ? 'pcie' : 'pci';
@@ -965,6 +969,8 @@ sub reserve_pci_usage {
 # devices.
 sub get_pci_bridges {
     my ($conf, $arch, $q35, $max_scsihw, $version_guard) = @_;
+
+    return if $arch eq 's390x'; # virtio devices are CCW devices there, not behind PCI bridges
 
     my $bridges = {
         # 0 => 1, always present

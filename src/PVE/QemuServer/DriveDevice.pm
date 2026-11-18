@@ -83,7 +83,7 @@ sub print_drivedevice_full {
     my $drive_id = PVE::QemuServer::Drive::get_drive_id($drive);
     if ($drive->{interface} eq 'virtio') {
         my $pciaddr = print_pci_addr("$drive_id", $arch);
-        $device = 'virtio-blk-pci';
+        $device = $arch eq 's390x' ? 'virtio-blk-ccw' : 'virtio-blk-pci';
         # for the switch to -blockdev, there is no blockdev for 'none'
         if (!$use_blockdev || $drive->{file} ne 'none') {
             $device .= ",drive=drive-$drive_id";

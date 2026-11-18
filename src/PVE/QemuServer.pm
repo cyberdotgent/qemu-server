@@ -1316,7 +1316,7 @@ sub print_netdevice_full {
 
     my $device = $net->{model};
     if ($net->{model} eq 'virtio') {
-        $device = 'virtio-net-pci';
+        $device = $arch eq 's390x' ? 'virtio-net-ccw' : 'virtio-net-pci';
     }
 
     my $pciaddr = print_pci_addr("$netid", $arch);
@@ -1325,7 +1325,8 @@ sub print_netdevice_full {
         # Consider we have N queues, the number of vectors needed is 2 * N + 2, i.e., one per in
         # and out of each queue plus one config interrupt and control vector queue
         my $vectors = $net->{queues} * 2 + 2;
-        $tmpstr .= ",vectors=$vectors,mq=on";
+        $tmpstr .= ",vectors=$vectors" if $arch ne 's390x'; # CCW devices have no MSI-X vectors
+        $tmpstr .= ",mq=on";
         if ($version_guard->(7, 1)) {
             $tmpstr .= ",packed=on";
         }
@@ -3552,7 +3553,8 @@ sub config_to_command {
     # enable balloon by default, unless explicitly disabled
     if (!defined($conf->{balloon}) || $conf->{balloon}) {
         my $pciaddr = print_pci_addr("balloon0", $arch);
-        my $ballooncmd = "virtio-balloon-pci,id=balloon0$pciaddr";
+        my $model = $arch eq 's390x' ? 'virtio-balloon-ccw' : 'virtio-balloon-pci';
+        my $ballooncmd = "$model,id=balloon0$pciaddr";
         $ballooncmd .= ",free-page-reporting=on" if min_version($machine_version, 6, 2);
         push @$devices, '-device', $ballooncmd;
     }
@@ -3604,6 +3606,8 @@ sub config_to_command {
                 my $pciaddr = print_pci_addr("$controller_prefix$controller", $arch);
                 my $scsihw_type =
                     $scsihw =~ m/^virtio-scsi-single/ ? "virtio-scsi-pci" : $scsihw;
+                $scsihw_type = 'virtio-scsi-ccw'
+                    if $arch eq 's390x' && $scsihw_type eq 'virtio-scsi-pci';
 
                 my $iothread = '';
                 if (
@@ -3934,6 +3938,7 @@ sub vm_deviceplug {
         my $scsihw = defined($conf->{scsihw}) ? $conf->{scsihw} : "lsi";
         my $pciaddr = print_pci_addr($deviceid, $arch);
         my $scsihw_type = $scsihw eq 'virtio-scsi-single' ? "virtio-scsi-pci" : $scsihw;
+        $scsihw_type = 'virtio-scsi-ccw' if $arch eq 's390x' && $scsihw_type eq 'virtio-scsi-pci';
 
         my $devicefull = "$scsihw_type,id=$deviceid$pciaddr";
 
