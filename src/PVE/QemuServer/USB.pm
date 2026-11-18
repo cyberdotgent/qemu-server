@@ -131,6 +131,12 @@ sub get_default_usb_bus {
 sub get_usb_controllers {
     my ($conf, $arch, $machine_version) = @_;
 
+    if ($arch eq 's390x') {
+        die "USB is not supported on s390x\n"
+            if grep { $conf->{"usb$_"} } 0 .. $MAX_USB_DEVICES - 1;
+        return;
+    }
+
     my $devices = [];
     my $pciaddr = "";
 

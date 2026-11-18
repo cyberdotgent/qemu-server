@@ -639,6 +639,9 @@ sub print_hostpci_devices {
     my $gpu_passthrough = 0;
     my $legacy_igd = 0;
 
+    die "PCI passthrough is not supported on s390x\n"
+        if $arch eq 's390x' && grep { $conf->{"hostpci$_"} } 0 .. $MAX_HOSTPCI_DEVICES - 1;
+
     my $pciaddr;
     my $pci_devices = choose_hostpci_devices(parse_hostpci_devices($conf), $vmid, $dry_run);
 

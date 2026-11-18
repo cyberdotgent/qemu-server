@@ -1125,11 +1125,12 @@ sub cleanup_drive_path {
 }
 
 sub parse_hotplug_features {
-    my ($data) = @_;
+    my ($data, $arch) = @_;
 
     my $res = {};
 
     return $res if $data eq '0';
+    return $res if $arch && $arch eq 's390x'; # no hotplug, changes stay pending until next start
 
     $data = $confdesc->{hotplug}->{default} if $data eq '1';
 
@@ -1313,6 +1314,9 @@ sub print_netdevice_full {
         $version_guard, # checks the machine version and records the required +pveX revision
         $host_mtu_migration, # force this value for host_mtu, 0 means force absence of param
     ) = @_;
+
+    die "netdev $netid: only VirtIO NICs are supported on s390x\n"
+        if $arch eq 's390x' && $net->{model} ne 'virtio';
 
     my $device = $net->{model};
     if ($net->{model} eq 'virtio') {
@@ -2855,6 +2859,8 @@ sub add_tpm_device {
 
     return if !$conf->{tpmstate0};
 
+    die "TPM is not supported on s390x\n" if $arch eq 's390x';
+
     my $tpm = parse_drive('tpmstate0', $conf->{tpmstate0});
     assert_tpm_version_supported($tpm->{version}, $arch);
 
@@ -3162,6 +3168,7 @@ sub config_to_command {
     my $machine_type = PVE::QemuServer::Machine::get_vm_machine($conf, $forcemachine);
     my $machine_version = extract_version($machine_type, $kvmver);
     $kvm //= 1 if is_native_arch($arch);
+    die "KVM is required on s390x\n" if $arch eq 's390x' && !$kvm;
 
     $machine_version =~ m/(\d+)\.(\d+)/;
     my ($machine_major, $machine_minor) = ($1, $2);
@@ -3204,7 +3211,7 @@ sub config_to_command {
 
     my $q35 = PVE::QemuServer::Machine::machine_type_is_q35($conf);
     my $hotplug_features =
-        parse_hotplug_features(defined($conf->{hotplug}) ? $conf->{hotplug} : '1');
+        parse_hotplug_features(defined($conf->{hotplug}) ? $conf->{hotplug} : '1', $arch);
     my $use_old_bios_files = undef;
     ($use_old_bios_files, $machine_type) = qemu_use_old_bios_files($machine_type);
 
@@ -3248,7 +3255,7 @@ sub config_to_command {
 
     push @$cmd, '-daemonize';
 
-    if ($conf->{smbios1}) {
+    if ($conf->{smbios1} && $arch ne 's390x') { # no SMBIOS on s390x
         my $smbios_conf = parse_smbios1($conf->{smbios1});
         # Do not pass base64 flag to qemu
         my $is_base64 = delete $smbios_conf->{base64};
@@ -3266,6 +3273,7 @@ sub config_to_command {
     }
 
     if ($conf->{bios} && $conf->{bios} eq 'ovmf') {
+        die "OVMF (UEFI) BIOS is not supported on s390x\n" if $arch eq 's390x';
         die "OVMF (UEFI) BIOS is not supported on 32-bit CPU types\n"
             if !$forcecpu && get_cpu_bitness($conf->{cpu}, $arch) == 32;
 
@@ -3300,7 +3308,7 @@ sub config_to_command {
         push @$devices, $bridges->@*;
     }
 
-    if ($conf->{vmgenid}) {
+    if ($conf->{vmgenid} && $arch ne 's390x') { # needs ACPI
         push @$devices, '-device', 'vmgenid,guid=' . $conf->{vmgenid};
     }
 
@@ -3316,6 +3324,7 @@ sub config_to_command {
         $tablet = $defaults->{tablet};
         $tablet = 0 if $qxlnum; # disable for spice because it is not needed
         $tablet = 0 if $vga->{type} =~ m/^serial\d+$/; # disable if we use serial terminal (no vga card)
+        $tablet = 0 if $arch eq 's390x'; # no USB
     }
 
     if ($tablet) {
@@ -3404,8 +3413,10 @@ sub config_to_command {
     }
     push @$cmd, '-nodefaults';
 
+    # the s390x firmware would wait for a boot menu selection without a timeout
     push @$cmd, '-boot',
-        "menu=on,strict=on,reboot-timeout=1000,splash=/usr/share/qemu-server/bootsplash.jpg";
+        "menu=on,strict=on,reboot-timeout=1000,splash=/usr/share/qemu-server/bootsplash.jpg"
+        if $arch ne 's390x';
 
     push $machineFlags->@*, 'acpi=off' if defined($conf->{acpi}) && $conf->{acpi} == 0;
 
@@ -3561,8 +3572,8 @@ sub config_to_command {
 
     if ($conf->{watchdog}) {
         my $wdopts = parse_watchdog($conf->{watchdog});
-        my $pciaddr = print_pci_addr("watchdog", $arch);
-        my $watchdog = $wdopts->{model} || 'i6300esb';
+        my $pciaddr = $arch eq 's390x' ? '' : print_pci_addr("watchdog", $arch);
+        my $watchdog = $arch eq 's390x' ? 'diag288' : $wdopts->{model} || 'i6300esb';
         push @$devices, '-device', "$watchdog$pciaddr";
         push @$devices, '-watchdog-action', $wdopts->{action} if $wdopts->{action};
     }
@@ -3604,6 +3615,8 @@ sub config_to_command {
                     if $drive->{index} > 13 && !&$version_guard(4, 1, 2);
 
                 my $pciaddr = print_pci_addr("$controller_prefix$controller", $arch);
+                die "scsi$drive->{index}: SCSI controller '$scsihw' is not supported on s390x\n"
+                    if $arch eq 's390x' && $scsihw !~ m/^virtio-scsi/;
                 my $scsihw_type =
                     $scsihw =~ m/^virtio-scsi-single/ ? "virtio-scsi-pci" : $scsihw;
                 $scsihw_type = 'virtio-scsi-ccw'
@@ -4550,7 +4563,7 @@ sub vmconfig_hotplug_pending {
     }
 
     my $hotplug_features =
-        parse_hotplug_features(defined($conf->{hotplug}) ? $conf->{hotplug} : '1');
+        parse_hotplug_features(defined($conf->{hotplug}) ? $conf->{hotplug} : '1', $arch);
 
     my $usb_hotplug;
     my $usb_was_unplugged = 0;
@@ -5763,8 +5776,10 @@ sub vm_start_nolock {
     if ($conf->{hugepages}) {
 
         my $code = sub {
-            my $hotplug_features =
-                parse_hotplug_features(defined($conf->{hotplug}) ? $conf->{hotplug} : '1');
+            my $hotplug_features = parse_hotplug_features(
+                defined($conf->{hotplug}) ? $conf->{hotplug} : '1',
+                PVE::QemuServer::Helpers::get_vm_arch($conf),
+            );
             my $hugepages_topology =
                 PVE::QemuServer::Memory::hugepages_topology($conf, $hotplug_features->{memory});
 

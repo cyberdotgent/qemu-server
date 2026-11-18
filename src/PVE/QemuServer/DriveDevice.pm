@@ -138,6 +138,7 @@ sub print_drivedevice_full {
         }
 
     } elsif ($drive->{interface} eq 'ide' || $drive->{interface} eq 'sata') {
+        die "$drive_id: $drive->{interface} is not supported on s390x\n" if $arch eq 's390x';
         my $maxdev = ($drive->{interface} eq 'sata') ? $PVE::QemuServer::Drive::MAX_SATA_DISKS : 2;
         my $controller = int($drive->{index} / $maxdev);
         my $unit = $drive->{index} % $maxdev;
