@@ -1326,7 +1326,13 @@ __PACKAGE__->register_method({
             }
             for my $disk (keys $disks->%*) {
                 my $value = $disks->{$disk}->{volid};
-                $create_args->{$disk} = "$storage:0${format},import-from=$value";
+                my $options = $disks->{$disk}->{options} // {};
+                $create_args->{$disk} = join(
+                    ',',
+                    "$storage:0${format}",
+                    "import-from=$value",
+                    map { "$_=$options->{$_}" } sort keys %$options,
+                );
             }
         }
 
@@ -1536,6 +1542,8 @@ our $cmddef = {
     terminal => [__PACKAGE__, 'terminal', ['vmid']],
 
     importovf => [__PACKAGE__, 'importovf', ['vmid', 'manifest', 'storage']],
+
+    'export-ova' => ['PVE::API2::Qemu', 'export_ova', ['vmid', 'storage'], {%node}, $upid_exit],
 
     cleanup => [__PACKAGE__, 'cleanup', ['vmid', 'clean-shutdown', 'guest-requested'], {%node}],
 
