@@ -62,6 +62,7 @@ use PVE::QemuServer::Helpers
     qw(config_aware_timeout get_iscsi_initiator_name get_host_arch min_version kvm_user_version windows_version);
 use PVE::QemuServer::Cloudinit;
 use PVE::QemuServer::CGroup;
+use PVE::QemuServer::CCW;
 use PVE::QemuServer::CPUConfig qw(
     print_cpu_device
     get_cpu_options
@@ -3818,6 +3819,8 @@ sub config_to_command {
     my $scsicontroller = {};
     my $ahcicontroller = {};
     my $scsihw = defined($conf->{scsihw}) ? $conf->{scsihw} : $defaults->{scsihw};
+
+    PVE::QemuServer::CCW::check_devno_conflicts($conf, 1) if $arch eq 's390x';
 
     # Add iscsi initiator name if available
     if (my $initiator = get_iscsi_initiator_name()) {

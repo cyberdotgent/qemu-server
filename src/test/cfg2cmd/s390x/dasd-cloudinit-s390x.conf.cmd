@@ -1,0 +1,29 @@
+/usr/bin/kvm \
+  -id 8006 \
+  -name vm8006 \
+  -no-shutdown \
+  -chardev 'socket,id=qmp,path=/var/run/qemu-server/8006.qmp,server=on,wait=off' \
+  -object 'monitor-qmp,chardev=qmp,id=monitor-qmp' \
+  -chardev 'socket,id=qmp-event,path=/var/run/qmeventd.sock,reconnect-ms=5000' \
+  -object 'monitor-qmp,chardev=qmp-event,id=monitor-qmp-event' \
+  -pidfile /var/run/qemu-server/8006.pid \
+  -daemonize \
+  -smp '1,sockets=1,cores=1,maxcpus=1' \
+  -nodefaults \
+  -vga none \
+  -nographic \
+  -cpu host \
+  -m 2048 \
+  -object '{"id":"throttle-drive-virtio0","limits":{},"qom-type":"throttle-group"}' \
+  -object '{"id":"throttle-drive-fba0","limits":{},"qom-type":"throttle-group"}' \
+  -chardev 'socket,id=sclp,path=/var/run/qemu-server/8006.sclp,server=on,wait=off' \
+  -device 'sclpconsole,chardev=sclp' \
+  -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
+  -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
+  -blockdev '{"detect-zeroes":"on","discard":"ignore","driver":"throttle","file":{"cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"qcow2","file":{"aio":"io_uring","cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"file","filename":"/var/lib/vz/images/8006/vm-8006-disk-0.qcow2","node-name":"edd19f6c1b3a6d5a6248c3376a91a16","read-only":false},"node-name":"fdd19f6c1b3a6d5a6248c3376a91a16","read-only":false},"node-name":"drive-virtio0","read-only":false,"throttle-group":"throttle-drive-virtio0"}' \
+  -device 'virtio-blk-ccw,drive=drive-virtio0,id=virtio0,devno=fe.0.000a,bootindex=100,write-cache=on' \
+  -blockdev '{"driver":"throttle","file":{"cache":{"direct":false,"no-flush":false},"driver":"qcow2","file":{"aio":"io_uring","cache":{"direct":false,"no-flush":false},"driver":"file","filename":"/var/lib/vz/images/8006/vm-8006-cloudinit.qcow2","node-name":"e865a512428a017ec1c7aee347c664b","read-only":true},"node-name":"f865a512428a017ec1c7aee347c664b","read-only":true},"node-name":"drive-fba0","read-only":true,"throttle-group":"throttle-drive-fba0"}' \
+  -device 'fba-ccw,drive=drive-fba0,id=fba0,devno=fe.0.0200' \
+  -netdev 'type=tap,id=net0,ifname=tap8006i0,script=/usr/libexec/qemu-server/pve-bridge,downscript=/usr/libexec/qemu-server/pve-bridgedown,vhost=on' \
+  -device 'virtio-net-ccw,mac=BC:24:11:00:00:00,netdev=net0,devno=fe.0.0012,id=net0,rx_queue_size=1024,tx_queue_size=256,host_mtu=1500,host_tunnel=off' \
+  -machine 'type=s390-ccw-virtio+pve0'

@@ -146,29 +146,39 @@ sub qemu_devno {
     return sprintf("fe.%d.%04x", $ssid, $devno);
 }
 
-=head3 get_devno_users($conf)
+=head3 get_devno_users($conf, [$current_only], [$override])
 
 All CCW devices with a configurable device number of a VM configuration, also the pending ones
-(a pending value replaces the current one, pending deletions are left out). Returns a list of
-C<{ key, kind, devno, count }>; C<devno> is undef if not configured.
+(a pending value replaces the current one, pending deletions are left out) unless
+C<$current_only> is set. C<$override> are further changes on top, key => value (undef deletes),
+for example of devices about to be created. Returns a list of C<{ key, kind, devno, count }>;
+C<devno> is undef if not configured.
 
 =cut
 
 sub get_devno_users {
-    my ($conf) = @_;
+    my ($conf, $current_only, $override) = @_;
 
     my $values = {};
     for my $key (keys %$conf) {
         next if ref($conf->{$key});
         $values->{$key} = $conf->{$key};
     }
-    if (my $pending = $conf->{pending}) {
+    if (!$current_only && (my $pending = $conf->{pending})) {
         for my $key (keys %$pending) {
             next if $key eq 'delete' || ref($pending->{$key});
             $values->{$key} = $pending->{$key};
         }
         for my $key (PVE::Tools::split_list($pending->{delete} // '')) {
             $key =~ s/^!//;
+            delete $values->{$key};
+        }
+    }
+
+    for my $key (keys %{ $override // {} }) {
+        if (defined($override->{$key})) {
+            $values->{$key} = $override->{$key};
+        } else {
             delete $values->{$key};
         }
     }
@@ -217,17 +227,18 @@ my sub reserved_by {
     return;
 }
 
-=head3 check_devno_conflicts($conf)
+=head3 check_devno_conflicts($conf, [$current_only], [$override])
 
-Dies if a configured device number of the VM configuration is invalid, in a reserved range,
+Dies if a configured device number of the VM configuration (including the pending changes, unless
+C<$current_only> is set, and C<$override>, see get_devno_users()) is invalid, in a reserved range,
 leaves no room for all device numbers of the device, or is used twice.
 
 =cut
 
 sub check_devno_conflicts {
-    my ($conf) = @_;
+    my ($conf, $current_only, $override) = @_;
 
-    my $users = get_devno_users($conf);
+    my $users = get_devno_users($conf, $current_only, $override);
     my $used = {};
     for my $user ($users->@*) {
         next if !defined($user->{devno});
@@ -257,23 +268,24 @@ sub check_devno_conflicts {
     return;
 }
 
-=head3 next_free_devno($conf, $kind, [$extra_used], [$skip_key])
+=head3 next_free_devno($conf, $kind, [$extra_used], [$skip_key], [$override])
 
 The next free device number for a device of C<$kind>: the first free and suitably aligned one in
 the default range of the kind, then upwards from there, then from 0.0.0100. C<$conf> may be
 undef (a VM that does not exist yet). C<$extra_used> is a list of further device numbers in use
 (for example those of other devices being created at the same time), C<$skip_key> a config key
-to ignore (the device whose number is chosen). Returns the canonical form, dies if all are taken.
+to ignore (the device whose number is chosen), C<$override> further changes (see
+get_devno_users()). Returns the canonical form, dies if all are taken.
 
 =cut
 
 sub next_free_devno {
-    my ($conf, $kind, $extra_used, $skip_key) = @_;
+    my ($conf, $kind, $extra_used, $skip_key, $override) = @_;
 
     my $info = devno_kind_info($kind);
     die "device numbers of the $kind devices are assigned by qemu-server\n" if $info->{reserved};
 
-    my $used = $conf ? used_devnos(get_devno_users($conf), $skip_key) : {};
+    my $used = used_devnos(get_devno_users($conf // {}, 0, $override), $skip_key);
     for my $value (($extra_used // [])->@*) {
         my ($ssid, $devno) = parse_devno($value);
         $used->{"$ssid.$devno"} = 'extra';

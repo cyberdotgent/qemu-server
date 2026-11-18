@@ -5,6 +5,7 @@ use warnings;
 
 use URI::Escape;
 
+use PVE::QemuServer::CCW;
 use PVE::QemuServer::Drive qw (drive_is_cdrom);
 use PVE::QemuServer::Helpers qw(kvm_user_version min_version);
 use PVE::QemuServer::Machine;
@@ -185,6 +186,14 @@ sub print_drivedevice_full {
             }
         }
         $device .= ",wwn=$drive->{wwn}" if $drive->{wwn};
+    } elsif (PVE::QemuServer::Drive::drive_is_dasd($drive)) {
+        die "$drive_id: DASDs are only supported on s390x\n" if $arch ne 's390x';
+        die "$drive_id: a DASD needs a volume\n" if $drive->{file} eq 'none';
+        die "$drive_id: no device number (devno) configured\n" if !defined($drive->{devno});
+        $device = $drive->{interface} eq 'fba' ? 'fba-ccw' : 'eckd-ccw';
+        $device .= ",drive=drive-$drive_id,id=$drive_id";
+        $device .= ",devno=" . PVE::QemuServer::CCW::qemu_devno($drive->{devno});
+        $has_write_cache = 0; # the device flushes at the end of each writing channel program
     } elsif ($drive->{interface} eq 'usb') {
         die "implement me";
         #  -device ide-drive,bus=ide.1,unit=0,drive=drive-ide0-1-0,id=ide0-1-0

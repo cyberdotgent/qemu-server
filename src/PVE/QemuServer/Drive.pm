@@ -13,6 +13,7 @@ use PVE::Storage;
 use PVE::Storage::Common;
 use PVE::Tools;
 
+use PVE::QemuServer::CCW;
 use PVE::QemuServer::Helpers;
 use PVE::QemuServer::Monitor qw(qsd_qmp_peer vm_qmp_peer);
 
@@ -159,6 +160,8 @@ sub get_path_and_format {
 my $MAX_IDE_DISKS = 4;
 our $MAX_SCSI_DISKS = 31;
 my $MAX_VIRTIO_DISKS = 16;
+my $MAX_FBA_DISKS = 32;
+my $MAX_CKD_DISKS = 64;
 our $MAX_SATA_DISKS = 6;
 our $MAX_UNUSED_DISKS = 256;
 our $NEW_DISK_RE = qr!^(([^/:\s]+):)?(\d+(\.\d+)?)$!;
@@ -513,6 +516,82 @@ my $virtiodesc = {
 };
 PVE::JSONSchema::register_standard_option("pve-qm-virtio", $virtiodesc);
 
+# DASDs of s390x, channel-attached disks addressed by their device number. Only the options that
+# apply to them, the device itself has no cache, discard or error policy settings.
+my %dasd_fmt = (
+    devno => {
+        type => 'string',
+        format => 'pve-qm-ccw-devno',
+        format_description => 'devno',
+        description => "The device number the guest addresses the DASD with, 0.<ssid>.<devno>"
+            . " (for example 0.0.0200). Assigned from the default range of the device type when"
+            . " creating the disk, if not given.",
+        optional => 1,
+    },
+);
+
+# 'media' only for a cloud-init drive, which is an FBA DASD on s390x
+my $fba_fmt = {
+    %drivedesc_base{qw(volume file media format size backup replicate shared)},
+    %readonly_fmt,
+    %dasd_fmt,
+};
+my $fbadesc = {
+    optional => 1,
+    type => 'string',
+    format => $fba_fmt,
+    description => "Use volume as s390x FBA DASD, an IBM 9336 fixed-block disk (n is 0 to "
+        . ($MAX_FBA_DISKS - 1) . ").",
+};
+PVE::JSONSchema::register_standard_option("pve-qm-fba", $fbadesc);
+
+my %ckd_fmt = (
+    cylinders => {
+        type => 'integer',
+        minimum => 1,
+        maximum => 65520,
+        description =>
+            "The number of cylinders of the 3390 volume. This is purely informational,"
+            . " the volume header holds the size.",
+        optional => 1,
+    },
+);
+
+my $ckd_fmt = {
+    %drivedesc_base{qw(volume file format size backup replicate shared)},
+    %readonly_fmt, %dasd_fmt, %ckd_fmt,
+};
+my $ckddesc = {
+    optional => 1,
+    type => 'string',
+    format => $ckd_fmt,
+    description => "Use volume as s390x CKD DASD, an IBM 3390 count-key-data disk (n is 0 to "
+        . ($MAX_CKD_DISKS - 1) . ").",
+};
+PVE::JSONSchema::register_standard_option("pve-qm-ckd", $ckddesc);
+
+# Only when allocating a new DASD volume.
+my %dasd_alloc_fmt = (
+    name => {
+        type => 'string',
+        pattern => '[A-Za-z0-9][A-Za-z0-9_-]{0,39}',
+        format_description => 'name',
+        description => "Name of the new volume, it is called 'vm-<vmid>-<name>' on the"
+            . " storage. For example the volume serial (VOLSER) the guest will give the volume.",
+        optional => 1,
+    },
+);
+
+my %ckd_alloc_fmt = (
+    model => {
+        type => 'string',
+        enum => [qw(3390-1 3390-2 3390-3 3390-9 3390-27 3390-54)],
+        description => "Create a volume of the size of this 3390 model. Alternatively, give"
+            . " the number of 'cylinders'.",
+        optional => 1,
+    },
+);
+
 my %efitype_fmt = (
     efitype => {
         type => 'string',
@@ -625,6 +704,8 @@ my $alldrive_fmt = {
     %wwn_fmt,
     %tpmversion_fmt,
     %efitype_fmt,
+    %dasd_fmt,
+    %ckd_fmt,
 };
 
 my %import_from_fmt = (
@@ -640,7 +721,7 @@ my %import_from_fmt = (
 );
 
 my $alldrive_fmt_with_alloc = {
-    %$alldrive_fmt, %import_from_fmt,
+    %$alldrive_fmt, %import_from_fmt, %dasd_alloc_fmt, %ckd_alloc_fmt,
 };
 
 my $unused_fmt = {
@@ -673,6 +754,8 @@ my $desc_with_alloc = sub {
     my $new_desc = dclone($desc);
 
     $new_desc->{format}->{'import-from'} = $import_from_fmt{'import-from'};
+    $new_desc->{format}->{name} = $dasd_alloc_fmt{name} if $type eq 'fba' || $type eq 'ckd';
+    $new_desc->{format}->{model} = $ckd_alloc_fmt{model} if $type eq 'ckd';
 
     my $extra_note = '';
     if ($type eq 'efidisk') {
@@ -681,6 +764,9 @@ my $desc_with_alloc = sub {
             . "copied to the volume instead.";
     } elsif ($type eq 'tpmstate') {
         $extra_note = " Note that SIZE_IN_GiB is ignored here and 4 MiB will be used instead.";
+    } elsif ($type eq 'ckd') {
+        $extra_note = " Note that SIZE_IN_GiB is ignored here, the size comes from 'model' or"
+            . " 'cylinders'.";
     }
 
     $new_desc->{description} .=
@@ -713,6 +799,16 @@ for (my $i = 0; $i < $MAX_VIRTIO_DISKS; $i++) {
     $drivedesc_hash_with_alloc->{"virtio$i"} = $desc_with_alloc->('virtio', $virtiodesc);
 }
 
+for (my $i = 0; $i < $MAX_FBA_DISKS; $i++) {
+    $drivedesc_hash->{"fba$i"} = $fbadesc;
+    $drivedesc_hash_with_alloc->{"fba$i"} = $desc_with_alloc->('fba', $fbadesc);
+}
+
+for (my $i = 0; $i < $MAX_CKD_DISKS; $i++) {
+    $drivedesc_hash->{"ckd$i"} = $ckddesc;
+    $drivedesc_hash_with_alloc->{"ckd$i"} = $desc_with_alloc->('ckd', $ckddesc);
+}
+
 $drivedesc_hash->{efidisk0} = $efidisk_desc;
 $drivedesc_hash_with_alloc->{efidisk0} = $desc_with_alloc->('efidisk', $efidisk_desc);
 
@@ -735,6 +831,8 @@ sub valid_drive_names {
         (map { "scsi$_" } (0 .. ($MAX_SCSI_DISKS - 1))),
         (map { "virtio$_" } (0 .. ($MAX_VIRTIO_DISKS - 1))),
         (map { "sata$_" } (0 .. ($MAX_SATA_DISKS - 1))),
+        (map { "fba$_" } (0 .. ($MAX_FBA_DISKS - 1))),
+        (map { "ckd$_" } (0 .. ($MAX_CKD_DISKS - 1))),
         'efidisk0',
         'tpmstate0',
     );
@@ -825,6 +923,12 @@ sub drive_is_cdrom {
     return 0 if $exclude_cloudinit && drive_is_cloudinit($drive);
 
     return $drive && $drive->{media} && ($drive->{media} eq 'cdrom');
+}
+
+# Whether the drive is an s390x DASD ('fba' or 'ckd').
+sub drive_is_dasd {
+    my ($drive) = @_;
+    return $drive->{interface} eq 'fba' || $drive->{interface} eq 'ckd';
 }
 
 sub drive_has_absolute_path {

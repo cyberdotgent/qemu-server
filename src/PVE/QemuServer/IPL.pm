@@ -8,6 +8,7 @@ use warnings;
 
 use PVE::JSONSchema qw(parse_property_string);
 
+use PVE::QemuServer::CCW;
 use PVE::QemuServer::Drive;
 use PVE::QemuServer::DriveDevice qw(scsihw_infos);
 use PVE::QemuServer::Helpers;
@@ -21,8 +22,9 @@ my $ipl_fmt = {
         type => 'string',
         pattern => '[a-z]+\d+',
         format_description => 'device',
-        description => "The device to IPL from, the key of a disk, CD-ROM drive, tape drive or"
-            . " network device of the VM whose QEMU device can IPL, for example 'virtio0'.",
+        description =>
+            "The device to IPL from, the key of a disk, DASD, CD-ROM drive, tape drive"
+            . " or network device of the VM whose QEMU device can IPL, for example 'virtio0'.",
     },
     loadparm => {
         optional => 1,
@@ -81,11 +83,21 @@ sub get_ipl_devices {
                 type => "scsi-$scsi_type",
                 devno => virtio_devno("$prefix$controller"),
             };
+        } elsif (PVE::QemuServer::Drive::drive_is_dasd($drive)) {
+            $entry = {
+                type => $drive->{interface} eq 'fba' ? 'fba-ccw' : 'eckd-ccw',
+                devno => defined($drive->{devno})
+                ? PVE::QemuServer::CCW::qemu_devno($drive->{devno})
+                : undef,
+            };
         } else {
             next; # no CCW device (IDE, SATA)
         }
         $entry->{key} = $key;
-        $entry->{description} = ($cdrom ? 'CD-ROM' : 'disk') . " $drive->{file}";
+        my $what = $cdrom ? 'CD-ROM' : 'disk';
+        $what = 'FBA DASD' if $drive->{interface} eq 'fba';
+        $what = 'CKD DASD' if $drive->{interface} eq 'ckd';
+        $entry->{description} = "$what $drive->{file}";
         push @$res, $entry;
     }
 
