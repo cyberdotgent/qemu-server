@@ -635,22 +635,25 @@ my sub create_disks : prototype($$$$$$$$$$$) {
         PVE::QemuServer::CCW::check_devno_conflicts($conf, 0, $override);
     };
 
+    # Check an image to import as DASD. Returns the parsed header of a CKD image.
     my $check_dasd_import_source = sub {
         my ($ds, $path, $format, $size) = @_;
 
         die "$ds: could not get the size of '$path'\n" if !$size;
         if ($ds =~ m/^ckd/) {
-            PVE::QemuServer::DASD::check_ckd_import_source($path, $format, $size);
-        } else {
-            PVE::QemuServer::DASD::check_fba_import_source($path, $format, $size);
+            return PVE::QemuServer::DASD::check_ckd_import_source($path, $format, $size);
         }
+        PVE::QemuServer::DASD::check_fba_import_source($path, $format, $size);
+        return;
     };
 
+    # The cylinders of an imported CKD volume are those of the source image: the storage may have
+    # rounded up the size of the new volume (LVM extents, ZFS volblocksize).
     my $finish_dasd_import = sub {
-        my ($ds, $disk, $volid) = @_;
+        my ($ds, $disk, $volid, $source_header) = @_;
 
         return if $ds !~ m/^ckd/;
-        my $header = PVE::QemuServer::DASD::check_ckd_volume($storecfg, $volid);
+        my $header = PVE::QemuServer::DASD::finish_ckd_import($storecfg, $volid, $source_header);
         $disk->{cylinders} = $header->{cylinders};
     };
 
@@ -789,9 +792,10 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                             if $parent;
                     }
 
+                    my $source_header;
                     if ($dasd) {
                         die "$ds: live import is not supported for DASDs\n" if $live_import;
-                        $check_dasd_import_source->(
+                        $source_header = $check_dasd_import_source->(
                             $ds,
                             PVE::Storage::path($storecfg, $source),
                             $source_format,
@@ -833,7 +837,8 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                         eval {
                             ($dst_volid, $size) =
                                 $import_from_volid->($storecfg, $source, $dest_info, $vollist);
-                            $finish_dasd_import->($ds, $disk, $dst_volid) if $dasd;
+                            $finish_dasd_import->($ds, $disk, $dst_volid, $source_header)
+                                if $dasd;
 
                             # remove extracted volumes after importing
                             if ($needs_extraction) {
@@ -851,9 +856,11 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                         PVE::Storage::file_size_info($source, undef, 'auto-detect', 1);
                     die "could not get file size of $source\n" if !$size;
 
+                    my $source_header;
                     if ($dasd) {
                         die "$ds: live import is not supported for DASDs\n" if $live_import;
-                        $check_dasd_import_source->($ds, $source, $source_format, $size);
+                        $source_header =
+                            $check_dasd_import_source->($ds, $source, $source_format, $size);
                     }
 
                     if ($live_import && $ds ne 'efidisk0') {
@@ -875,13 +882,16 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                             },
                         );
 
-                        $finish_dasd_import->($ds, $disk, $dst_volid) if $dasd;
+                        push @$vollist, $dst_volid; # freed if anything below fails
+
+                        $finish_dasd_import->($ds, $disk, $dst_volid, $source_header) if $dasd;
 
                         # change imported disk to a base volume in case the VM is a template
-                        $dst_volid = PVE::Storage::vdisk_create_base($storecfg, $dst_volid)
-                            if PVE::QemuConfig->is_template($conf);
-
-                        push @$vollist, $dst_volid;
+                        if (PVE::QemuConfig->is_template($conf)) {
+                            @$vollist = grep { $_ ne $dst_volid } @$vollist;
+                            $dst_volid = PVE::Storage::vdisk_create_base($storecfg, $dst_volid);
+                            push @$vollist, $dst_volid;
+                        }
                     }
                 }
 

@@ -249,7 +249,7 @@ is($@, '', 'CKD allows offline operations');
 
 # header I/O with the real tools, if installed
 SKIP: {
-    skip 'qemu-img/qemu-io not installed', 14 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
+    skip 'qemu-img/qemu-io not installed', 25 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
 
     my $dir = tempdir(CLEANUP => 1);
     for my $format (qw(raw qcow2)) {
@@ -320,6 +320,39 @@ SKIP: {
     like($@, qr/grows by whole cylinders/, 'less than a cylinder');
     ($size, $cylinders) = PVE::QemuServer::DASD::resize_ckd_volume({}, 'x', 10**12, undef);
     is($cylinders, 65520, 'at most 65520 cylinders');
+
+    # import of a Hercules image (exact length, high cylinder 0) into storage that rounds the
+    # size up: 4 MiB LVM extents, 16 KiB ZFS volblocksize
+    for my $rounding ([lvm => 4 * 1024 * 1024], [zfs => 16 * 1024]) {
+        my ($what, $unit) = $rounding->@*;
+        my $source_size = 512 + 1113 * $cyl;
+        my $source_header = $parse->($hercules, $source_size);
+        is($source_header->{cylinders}, 1113, "$what: source cylinders");
+        # the copy of the source, on a volume with slack
+        truncate($vol, 0);
+        truncate($vol, $source_size + ($unit - $source_size % $unit) % $unit);
+        PVE::QemuServer::DASD::write_image_head($vol, 'raw', $hercules);
+        ok(-s $vol > $source_size, "$what: destination has slack");
+        like(
+            (eval { PVE::QemuServer::DASD::check_ckd_volume({}, 'x') } // $@),
+            qr/whole cylinders/,
+            "$what: the slack alone does not tell the cylinders",
+        );
+        my $imported = PVE::QemuServer::DASD::finish_ckd_import({}, 'x', $source_header);
+        is($imported->{cylinders}, 1113, "$what: imported volume has the source cylinders");
+        is(
+            $parse->(PVE::QemuServer::DASD::read_image_head($vol, 'raw'), -s $vol)->{cylinders},
+            1113,
+            "$what: cylinder count written into the header",
+        );
+    }
+    truncate($vol, 512 + 1000 * $cyl);
+    eval {
+        PVE::QemuServer::DASD::finish_ckd_import(
+            {}, 'x', { cylinders => 1113, 'high-cylinder' => 0 },
+        );
+    };
+    like($@, qr/too small for 1113 cylinders/, 'import destination too small');
 }
 
 done_testing();

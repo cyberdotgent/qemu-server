@@ -233,6 +233,31 @@ sub check_ckd_volume {
     return $header;
 }
 
+# Complete a CKD volume imported from an image whose header ($source_header, see
+# check_ckd_import_source()) was checked before: write the cylinder count of the source into the
+# header of the volume, as the storage may have made it larger (LVM extents, ZFS volblocksize) and
+# the slack must not count as cylinders. Returns the header of the volume.
+sub finish_ckd_import {
+    my ($storecfg, $volid, $source_header) = @_;
+
+    return check_ckd_volume($storecfg, $volid) if !$source_header;
+
+    my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
+    my $cylinders = $source_header->{cylinders};
+    die "volume '$volid' is too small for $cylinders cylinders\n"
+        if $size < ckd_volume_size($cylinders);
+
+    my $header = { $source_header->%*, 'high-cylinder' => $cylinders };
+    if ($source_header->{'high-cylinder'} != $cylinders) {
+        print "volume '$volid': setting the cylinder count in the CKD header\n";
+        write_image_head(
+            $path, $format, ckd_header($cylinders, $header->{serial}, $header->{identifier}),
+        );
+    }
+
+    return $header;
+}
+
 # Check an image to be imported as a CKD volume, before importing it. Returns the parsed header.
 sub check_ckd_import_source {
     my ($path, $format, $size) = @_;
