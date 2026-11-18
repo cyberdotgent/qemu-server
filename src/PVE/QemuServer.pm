@@ -3557,8 +3557,8 @@ sub config_to_command {
         $tablet = $defaults->{tablet};
         $tablet = 0 if $qxlnum; # disable for spice because it is not needed
         $tablet = 0 if $vga->{type} =~ m/^serial\d+$/; # disable if we use serial terminal (no vga card)
-        $tablet = 0 if $arch eq 's390x'; # no USB
     }
+    $tablet = 0 if $arch eq 's390x'; # no USB, no pointer
 
     if ($tablet) {
         push @$devices, '-device', print_tabletdevice_full($conf, $arch) if $tablet;
@@ -3731,7 +3731,9 @@ sub config_to_command {
         "menu=on,strict=on,reboot-timeout=1000,splash=/usr/share/qemu-server/bootsplash.jpg"
         if $arch ne 's390x';
 
-    push $machineFlags->@*, 'acpi=off' if defined($conf->{acpi}) && $conf->{acpi} == 0;
+    # s390x has no ACPI
+    push $machineFlags->@*, 'acpi=off'
+        if defined($conf->{acpi}) && $conf->{acpi} == 0 && $arch ne 's390x';
 
     push @$cmd, '-no-reboot' if defined($conf->{reboot}) && $conf->{reboot} == 0;
 
