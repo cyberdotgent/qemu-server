@@ -4118,6 +4118,8 @@ sub config_to_command {
         }
     }
 
+    die "AMD SEV is not supported on s390x\n" if $conf->{'amd-sev'} && $arch eq 's390x';
+    die "Intel TDX is not supported on s390x\n" if $conf->{'intel-tdx'} && $arch eq 's390x';
     if ($conf->{'amd-sev'}) {
         push @$devices, '-object', get_amd_sev_object($conf->{'amd-sev'}, $conf->{bios});
         push @$machineFlags, 'confidential-guest-support=sev0';
