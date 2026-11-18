@@ -73,7 +73,9 @@ sub get_ipl_devices {
             my $scsi_type =
                 eval { PVE::QemuServer::Drive::get_scsi_device_type($drive, $storecfg, undef) }
                 // ($cdrom ? 'cd' : 'hd');
-            my (undef, $controller, $prefix) = scsihw_infos($conf->{scsihw}, $drive->{index});
+            # the virtio SCSI controller is the default on s390x
+            my $scsihw = $conf->{scsihw} // 'virtio-scsi-pci';
+            my (undef, $controller, $prefix) = scsihw_infos($scsihw, $drive->{index});
             $entry = {
                 type => "scsi-$scsi_type",
                 devno => virtio_devno("$prefix$controller"),

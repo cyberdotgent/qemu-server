@@ -3287,6 +3287,10 @@ sub config_to_command {
     my $kvm_binary = PVE::QemuServer::Helpers::get_command_for_arch($arch);
     my $kvmver = kvm_user_version($kvm_binary);
 
+    # the virtio SCSI controller is the only one on s390x, so it is the default there
+    $conf = { $conf->%*, scsihw => 'virtio-scsi-pci' }
+        if $arch eq 's390x' && !defined($conf->{scsihw});
+
     if (!$kvmver || $kvmver !~ m/^(\d+)\.(\d+)/ || $1 < 6) {
         $kvmver //= "undefined";
         die "Detected old QEMU binary ('$kvmver', at least 6.0 is required)\n";
