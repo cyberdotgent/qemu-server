@@ -43,8 +43,28 @@ __PACKAGE__->register_method({
                 },
                 type => {
                     type => 'string',
-                    enum => ['q35', 'i440fx'],
-                    description => "The machine type.",
+                    description => "The machine type, like 'q35', 'i440fx', 'virt' or"
+                        . " 's390-ccw-virtio'. For an unversioned machine type of the QEMU build,"
+                        . " its name.",
+                },
+                class => {
+                    type => 'string',
+                    enum => ['virtio', 'mainframe'],
+                    optional => 1,
+                    description => "s390x only: 'virtio' for the paravirtual machine (firmware"
+                        . " boot, CD-ROM drives), 'mainframe' for the machines of QEMU builds with"
+                        . " mainframe support (channel-program IPL, no CD-ROM drives).",
+                },
+                description => {
+                    type => 'string',
+                    optional => 1,
+                    description => "The description of an unversioned machine type.",
+                },
+                'new-vm-default' => {
+                    type => 'boolean',
+                    optional => 1,
+                    description => "Set for the machine type a new VM without a configured"
+                        . " machine type gets.",
                 },
                 version => {
                     type => 'string',
@@ -96,6 +116,31 @@ __PACKAGE__->register_method({
             ]; # merge & sort
         };
         die "could not load supported machine versions - $@\n" if $@;
+
+        if ($arch eq 's390x') {
+            $_->{class} = 'virtio' for $supported_machine_list->@*;
+
+            # the unversioned machine types the QEMU build offers, used as-is
+            my $kvm_binary = PVE::QemuServer::Helpers::get_command_for_arch($arch);
+            my $types = PVE::QemuServer::Machine::s390x_mainframe_machine_types($kvm_binary);
+            my $version = PVE::QemuServer::Helpers::kvm_user_version($kvm_binary);
+            $version =~ s/^(\d+\.\d+).*$/$1/;
+            unshift $supported_machine_list->@*, map {
+                {
+                    id => $_,
+                    type => $_,
+                    version => $version,
+                    class => 'mainframe',
+                    description => $types->{$_},
+                }
+            } sort keys %$types;
+
+            my $default = PVE::QemuServer::Machine::default_new_machine_for_arch($arch, $kvm_binary);
+            for my $entry ($supported_machine_list->@*) {
+                $entry->{'new-vm-default'} = 1 if $entry->{id} eq $default;
+            }
+        }
+
         return $supported_machine_list;
     },
 });

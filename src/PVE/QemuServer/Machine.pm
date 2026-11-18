@@ -181,6 +181,66 @@ sub is_unversioned_machine_type {
     return $machine_type !~ $known_machine_family_re;
 }
 
+=head3 s390x_machine_class
+
+    my $class = s390x_machine_class($machine_type);
+
+Returns the class of an s390x machine type: C<virtio> for the paravirtual C<s390-ccw-virtio> machine
+of upstream QEMU, whose devices are booted by the s390-ccw firmware, and which is the only one with
+CD-ROM drives. C<mainframe> for any other, unversioned machine type of the QEMU build: those are
+machines of builds with mainframe support, which IPL like real hardware with a channel program, and
+have virtio devices too, but no CD-ROM drives.
+
+=cut
+
+sub s390x_machine_class {
+    my ($machine_type) = @_;
+
+    return is_unversioned_machine_type($machine_type) ? 'mainframe' : 'virtio';
+}
+
+=head3 s390x_mainframe_machine_types
+
+    my $types = s390x_mainframe_machine_types($kvm_binary);
+
+Returns a hash of the mainframe class machine types the QEMU binary offers, with their description as
+value. See C<s390x_machine_class()>. QEMU's C<none> and experimental C<x-> machine types are left out.
+
+=cut
+
+sub s390x_mainframe_machine_types {
+    my ($kvm_binary) = @_;
+
+    my $types = PVE::QemuServer::Helpers::kvm_machine_types($kvm_binary);
+    return {
+        map { $_ => $types->{$_} }
+            grep { $_ ne 'none' && !m/^x-/ && is_unversioned_machine_type($_) } keys %$types
+    };
+}
+
+=head3 default_new_machine_for_arch
+
+    my $machine = default_new_machine_for_arch($arch, $kvm_binary);
+
+Returns the machine type for a new VM without a configured one. On s390x, that is the first mainframe
+class machine type the QEMU binary offers, if any, as it can run both Linux and mainframe operating
+systems. Otherwise, and on other architectures, it is the default machine of the architecture.
+
+=cut
+
+sub default_new_machine_for_arch {
+    my ($arch, $kvm_binary) = @_;
+
+    if ($arch eq 's390x') {
+        $kvm_binary //= PVE::QemuServer::Helpers::get_command_for_arch($arch);
+        my $types = eval { s390x_mainframe_machine_types($kvm_binary) } // {};
+        my ($first) = sort keys %$types;
+        return $first if defined($first);
+    }
+
+    return default_machine_for_arch($arch);
+}
+
 =head3 machine_base_type
 
     my $base_type = machine_base_type($machine_type);

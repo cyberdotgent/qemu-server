@@ -124,7 +124,8 @@ sub kvm_device_types {
 my $kvm_machine_types = {};
 my $kvm_machine_types_mtime = {};
 
-# Returns a hash with the names of the machine types (including aliases) the QEMU binary supports.
+# Returns a hash with the names of the machine types (including aliases) the QEMU binary supports,
+# and their descriptions as values.
 sub kvm_machine_types {
     my ($binary) = @_;
 
@@ -140,8 +141,8 @@ sub kvm_machine_types {
         my $line = shift;
         if (!$list_started) {
             $list_started = $line =~ m/^Supported machines are:/;
-        } elsif ($line =~ m/^(\S+)/) {
-            $types->{$1} = 1;
+        } elsif ($line =~ m/^(\S+)\s*(.*?)\s*$/) {
+            $types->{$1} = length($2) ? $2 : $1;
         }
     };
 

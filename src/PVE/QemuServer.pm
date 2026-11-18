@@ -3241,6 +3241,28 @@ my sub get_vga_properties {
     return ($vga, $qxlnum);
 }
 
+# On s390x, only the virtio machine has CD-ROM drives: they are booted by its firmware. The
+# mainframe class machines IPL from tape or network boot their installers instead.
+sub assert_s390x_machine_devices {
+    my ($conf) = @_;
+
+    return if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
+
+    my $machine = PVE::QemuServer::Machine::parse_machine($conf->{machine})->{type}
+        // PVE::QemuServer::Machine::default_machine_for_arch('s390x');
+    return if PVE::QemuServer::Machine::s390x_machine_class($machine) ne 'mainframe';
+
+    for my $key (PVE::QemuServer::Drive::valid_drive_names()) {
+        next if !$conf->{$key};
+        my $drive = eval { parse_drive($key, $conf->{$key}) } or next;
+        die "$key: machine type '$machine' has no CD-ROM drives, use a tape drive or the"
+            . " network boot, or the virtio machine (s390-ccw-virtio)\n"
+            if drive_is_cdrom($drive, 1);
+    }
+
+    return;
+}
+
 sub config_to_command {
     my ($storecfg, $vmid, $conf, $defaults, $options) = @_;
 
@@ -3307,6 +3329,7 @@ sub config_to_command {
     my $machine_version = extract_version($machine_type, $kvmver);
     $kvm //= 1 if is_native_arch($arch);
     die "KVM is required on s390x\n" if $arch eq 's390x' && !$kvm;
+    assert_s390x_machine_devices({ $conf->%*, machine => $machine_type }) if !$is_template;
 
     $machine_version =~ m/(\d+)\.(\d+)/;
     my ($machine_major, $machine_minor) = ($1, $2);

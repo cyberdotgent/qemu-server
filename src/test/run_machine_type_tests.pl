@@ -79,4 +79,42 @@ for my $machine (qw(x-test-sys+pve1 x-test-lpar.pxe X-TEST-SYS -lpar lpar-)) {
     ok($@, "schema rejects $machine");
 }
 
+# s390x machine classes: the paravirtual s390-ccw-virtio machine, and the machine types of QEMU builds
+# with mainframe support
+for my $machine (qw(s390-ccw-virtio s390-ccw-virtio-11.1 s390-ccw-virtio-10.1+pve0)) {
+    is(PVE::QemuServer::Machine::s390x_machine_class($machine), 'virtio', "$machine is virtio");
+}
+for my $machine (qw(x-test-lpar virtual-lpar)) {
+    is(PVE::QemuServer::Machine::s390x_machine_class($machine), 'mainframe', "$machine is mainframe");
+}
+
+my $machine_types = {};
+$helpers->mock(kvm_machine_types => sub { return $machine_types });
+
+$machine_types = {
+    'none' => 'empty machine',
+    's390-ccw-virtio' => 'Virtual s390x machine (version 11.1) (alias of s390-ccw-virtio-11.1)',
+    's390-ccw-virtio-11.1' => 'Virtual s390x machine (version 11.1) (default)',
+    'x-remote' => 'Experimental remote machine',
+    'virtual-lpar-b' => 'LPAR B',
+    'virtual-lpar-a' => 'LPAR A',
+};
+is_deeply(
+    PVE::QemuServer::Machine::s390x_mainframe_machine_types('/usr/bin/kvm'),
+    { 'virtual-lpar-a' => 'LPAR A', 'virtual-lpar-b' => 'LPAR B' },
+    'mainframe machine types of the binary, without none and x-',
+);
+is(
+    PVE::QemuServer::Machine::default_new_machine_for_arch('s390x', '/usr/bin/kvm'),
+    'virtual-lpar-a',
+    'new s390x VMs get the first mainframe machine type',
+);
+delete $machine_types->@{qw(virtual-lpar-a virtual-lpar-b)};
+is(
+    PVE::QemuServer::Machine::default_new_machine_for_arch('s390x', '/usr/bin/kvm'),
+    's390-ccw-virtio',
+    'new s390x VMs get the virtio machine without a mainframe machine type',
+);
+is(PVE::QemuServer::Machine::default_new_machine_for_arch('x86_64'), 'pc', 'x86_64 default');
+
 done_testing();

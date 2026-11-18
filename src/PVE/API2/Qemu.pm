@@ -1687,6 +1687,13 @@ __PACKAGE__->register_method({
 
                 $conf->{meta} = PVE::QemuServer::MetaInfo::new_meta_info_string();
 
+                # new s390x VMs get the default machine type for new VMs, a mainframe class one
+                if ($arch eq 's390x' && !$conf->{machine}) {
+                    my $machine = PVE::QemuServer::Machine::default_new_machine_for_arch($arch);
+                    $conf->{machine} = $machine
+                        if $machine ne PVE::QemuServer::Machine::default_machine_for_arch($arch);
+                }
+
                 my $vollist = [];
                 eval {
                     ($vollist, my $created_opts, $live_import_mapping) = create_disks(
@@ -1710,6 +1717,7 @@ __PACKAGE__->register_method({
                     }
 
                     PVE::QemuServer::IPL::check_ipl_config($conf, $storecfg) if $conf->{ipl};
+                    PVE::QemuServer::assert_s390x_machine_devices($conf);
 
                     my $vga = PVE::QemuServer::parse_vga($conf->{vga});
                     PVE::QemuServer::assert_clipboard_config($vga);
@@ -2684,6 +2692,11 @@ my $update_vm_api = sub {
                 && ($param->{$opt} eq $conf->{pending}->{$opt}); # skip if nothing changed
 
             my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
+
+            if ($arch eq 's390x' && ($opt eq 'machine' || $opt =~ m/^(?:scsi|virtio)\d+$/)) {
+                PVE::QemuServer::assert_s390x_machine_devices(
+                    { $get_config_with_pending->($conf)->%*, $opt => $param->{$opt} });
+            }
 
             if (PVE::QemuServer::is_valid_drivename($opt)) {
                 # old drive
