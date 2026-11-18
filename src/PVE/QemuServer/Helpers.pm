@@ -218,11 +218,6 @@ sub get_s390x_consoles {
     return ($conf->{ostype} // 'other') =~ m/^l\d\d$/ ? ['sclp'] : ['sclplm', '3270'];
 }
 
-sub terminal_history_file {
-    my ($vmid, $console) = @_;
-    return "${var_run_tmpdir}/${vmid}.$console.history";
-}
-
 sub console_socket {
     my ($vmid, $console) = @_;
     return "${var_run_tmpdir}/${vmid}.$console";
@@ -236,14 +231,9 @@ sub get_terminal_command {
     my $socket = console_socket($vmid, $iface);
 
     if ($iface eq '3270') {
-        # c3270 talks TN3270 to the socket itself and has its own escape key (Ctrl+]). Use a
-        # 3279 model 2 (24x80), like the integrated 3270 console of a real machine, so the screen
-        # size does not depend on the size of the terminal.
-        return ['c3270', '-model', '3279-2', "U:$socket"];
-    } elsif ($iface eq 'sclplm') {
-        # The line-mode console takes whole lines. Edit them locally, with a history per VM.
-        my $history = terminal_history_file($vmid, $iface);
-        return ['rlwrap', '-H', $history, 'socat', "UNIX-CONNECT:$socket", 'STDIO'];
+        # c3270 talks TN3270 to the socket itself and has its own escape key (Ctrl+]). It
+        # emulates the largest 3270 model that fits the terminal (model 2 to 4).
+        return ['c3270', "U:$socket"];
     }
 
     my $options = 'raw,echo=0';

@@ -45,21 +45,18 @@ my $terminal_tests = [
         expected => ['socat', 'UNIX-CONNECT:/var/run/qemu-server/100.sclp', 'STDIO,raw,echo=0'],
     },
     {
-        name => 'line-mode SCLP console is edited locally',
-        args => ['sclplm', 0],
+        name => 'line-mode SCLP console, edited by QEMU',
+        args => ['sclplm', 0x0f],
         expected => [
-            'rlwrap',
-            '-H',
-            '/var/run/qemu-server/100.sclplm.history',
             'socat',
             'UNIX-CONNECT:/var/run/qemu-server/100.sclplm',
-            'STDIO',
+            'STDIO,raw,echo=0,escape=0xf',
         ],
     },
     {
         name => 'integrated 3270 console uses c3270',
         args => ['3270', 0x0f],
-        expected => ['c3270', '-model', '3279-2', 'U:/var/run/qemu-server/100.3270'],
+        expected => ['c3270', 'U:/var/run/qemu-server/100.3270'],
     },
 ];
 

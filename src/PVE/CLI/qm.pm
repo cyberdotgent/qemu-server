@@ -103,8 +103,9 @@ sub run_vnc_proxy {
     exit(0);
 }
 
-# c3270 sizes its screen once at startup and needs at least 24x80 for a 3270 model 2. termproxy
-# only sets the final size of the terminal after starting the command, so wait for it a moment.
+# c3270 picks the 3270 model from the terminal size once at startup and needs at least 24x80
+# (model 2). termproxy only sets the final size of the terminal after starting the command, so
+# wait for it a moment.
 my sub wait_for_3270_terminal_size {
     for (my $i = 0; $i < 20; $i++) {
         my ($rows, $cols) = split(/\s+/, `stty size 2>/dev/null` // '');
@@ -876,8 +877,6 @@ __PACKAGE__->register_method({
         my $escapemsg = '';
         if ($iface eq '3270') {
             $escapemsg = ' (press Ctrl+] for the c3270 prompt, quit to exit)';
-        } elsif ($iface eq 'sclplm') {
-            $escapemsg = ' (line mode, press Ctrl+D to exit)';
         } elsif ($escape) {
             $escapemsg = sprintf(' (press Ctrl+%c to exit)', $escape + 0x40);
         }

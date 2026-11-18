@@ -1909,8 +1909,6 @@ sub destroy_vm {
     eval { PVE::QemuServer::Network::delete_ifaces_ipams_ips($conf, $vmid) };
     warn $@ if $@;
 
-    unlink PVE::QemuServer::Helpers::terminal_history_file($vmid, 'sclplm');
-
     if (defined $replacement_conf) {
         PVE::QemuConfig->write_config($vmid, $replacement_conf);
     } else {
@@ -3382,8 +3380,7 @@ sub config_to_command {
                 push @$devices, '-device', 'sclpconsole,chardev=sclp';
             } elsif ($console eq 'sclplm') {
                 push @$devices, '-chardev', "socket,id=sclplm,path=$socket,server=on,wait=off";
-                # no echo, the client edits the line and only sends it on Enter
-                push @$devices, '-device', 'sclplmconsole,chardev=sclplm,echo=off';
+                push @$devices, '-device', 'sclplmconsole,chardev=sclplm';
             } elsif ($console eq '3270') {
                 # not part of upstream QEMU, but of QEMU builds with mainframe support
                 if (!PVE::QemuServer::Helpers::kvm_device_types($kvm_binary)->{sclp3270console}) {
