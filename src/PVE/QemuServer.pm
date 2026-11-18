@@ -2449,6 +2449,65 @@ our $vmstatus_return_properties = {
         type => 'string',
         optional => 1,
     },
+    'panic-info' => {
+        description => "Information about the guest crash from the CPU that crashed, if the VM"
+            . " is in the 'guest-panicked' run state and QEMU provides it. 64-bit values are"
+            . " hexadecimal strings with 16 digits.",
+        type => 'object',
+        optional => 1,
+        properties => {
+            type => {
+                description => "The kind of crash information, named like in QEMU.",
+                type => 'string',
+                enum => ['hyper-v', 's390'],
+            },
+            core => {
+                description => "s390: core ID of the CPU that crashed.",
+                type => 'integer',
+                optional => 1,
+            },
+            'psw-mask' => {
+                description => "s390: mask (control fields) of the guest PSW.",
+                type => 'string',
+                optional => 1,
+            },
+            'psw-addr' => {
+                description => "s390: instruction address of the guest PSW.",
+                type => 'string',
+                optional => 1,
+            },
+            reason => {
+                description => "s390: crash reason, like 'disabled-wait'.",
+                type => 'string',
+                optional => 1,
+            },
+            arg1 => {
+                description => "hyper-v: crash parameter 1 (for Windows the STOP code).",
+                type => 'string',
+                optional => 1,
+            },
+            arg2 => {
+                description => "hyper-v: crash parameter 2 (for Windows STOP parameter 1).",
+                type => 'string',
+                optional => 1,
+            },
+            arg3 => {
+                description => "hyper-v: crash parameter 3 (for Windows STOP parameter 2).",
+                type => 'string',
+                optional => 1,
+            },
+            arg4 => {
+                description => "hyper-v: crash parameter 4 (for Windows STOP parameter 3).",
+                type => 'string',
+                optional => 1,
+            },
+            arg5 => {
+                description => "hyper-v: crash parameter 5 (for Windows STOP parameter 4).",
+                type => 'string',
+                optional => 1,
+            },
+        },
+    },
     pid => {
         description => "PID of the QEMU process, if the VM is running.",
         type => 'integer',
@@ -2789,9 +2848,54 @@ sub vmstatus {
     foreach my $vmid (keys %$list) {
         next if $opt_vmid && ($vmid ne $opt_vmid);
         $res->{$vmid}->{qmpstatus} = $res->{$vmid}->{status} if !$res->{$vmid}->{qmpstatus};
+
+        if ($res->{$vmid}->{qmpstatus} eq 'guest-panicked') {
+            my $panic_info = eval { get_guest_panic_info($vmid) };
+            $res->{$vmid}->{'panic-info'} = $panic_info if $panic_info;
+        }
     }
 
     return $res;
+}
+
+# Returns the crash information of the CPU that crashed, as far as QEMU has it for the CPU
+# architecture (the 'crash-information' CPU property: Hyper-V crash MSRs on x86, PSW on s390x),
+# or undef. Integers QEMU reports as uint64 are returned as hexadecimal strings, which also
+# keeps them exact in JavaScript.
+sub get_guest_panic_info {
+    my ($vmid) = @_;
+
+    my $cpus = mon_cmd($vmid, 'query-cpus-fast');
+    for my $cpu ($cpus->@*) {
+        # only the CPU that crashed has it, the others report an error
+        my $info = eval {
+            mon_cmd(
+                $vmid, 'qom-get',
+                path => $cpu->{'qom-path'},
+                property => 'crash-information',
+            );
+        };
+        next if !$info || !defined($info->{type});
+
+        my $hex = sub { return sprintf('%016x', $_[0] // 0) };
+        if ($info->{type} eq 's390') {
+            return {
+                type => 's390',
+                core => $info->{core},
+                'psw-mask' => $hex->($info->{'psw-mask'}),
+                'psw-addr' => $hex->($info->{'psw-addr'}),
+                reason => $info->{reason},
+            };
+        } elsif ($info->{type} eq 'hyper-v') {
+            return {
+                type => 'hyper-v',
+                map { ("arg$_" => $hex->($info->{"arg$_"})) } 1 .. 5,
+            };
+        }
+        return undef;
+    }
+
+    return undef;
 }
 
 sub conf_has_serial {
