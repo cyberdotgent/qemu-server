@@ -1,0 +1,17 @@
+#!/usr/bin/perl
+
+# Create the tmux sessions that keep the 3270 consoles of an s390x VM connected, run by
+# pve-qemu-3270@<vmid>.service.
+
+use strict;
+use warnings;
+
+use PVE::QemuConfig;
+use PVE::QemuServer;
+use PVE::QemuServer::Console3270;
+
+my $vmid = shift;
+die "usage: $0 <vmid>\n" if !defined($vmid) || $vmid !~ m/^\d+$/;
+
+my $conf = PVE::QemuConfig->load_config($vmid);
+PVE::QemuServer::Console3270::create_sessions($vmid, $conf);

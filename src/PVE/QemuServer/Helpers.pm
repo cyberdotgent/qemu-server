@@ -313,18 +313,12 @@ sub console_socket {
 }
 
 # The command that attaches the terminal to the console or serial port $iface of a VM, $escape is
-# the character code of the escape key (0 for none). $model is the 3270 model to emulate for a
-# 3270 terminal, if configured.
+# the character code of the escape key (0 for none). The 3270 consoles have persistent sessions
+# instead, see PVE::QemuServer::Console3270.
 sub get_terminal_command {
-    my ($vmid, $iface, $escape, $model) = @_;
+    my ($vmid, $iface, $escape) = @_;
 
     my $socket = console_socket($vmid, $iface);
-
-    if ($iface eq '3270' || $iface =~ m/^terminal\d+$/) {
-        # c3270 talks TN3270 to the socket itself and has its own escape key (Ctrl+]). Without a
-        # model, it emulates the largest 3270 model that fits the terminal (model 2 to 4).
-        return ['c3270', (defined($model) ? ('-model', "3279-$model") : ()), "U:$socket"];
-    }
 
     my $options = 'raw,echo=0';
     $options .= sprintf(',escape=0x%x', $escape) if $escape;

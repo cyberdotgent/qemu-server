@@ -62,6 +62,7 @@ use PVE::QemuServer::Helpers
     qw(config_aware_timeout get_iscsi_initiator_name get_host_arch min_version kvm_user_version windows_version);
 use PVE::QemuServer::CCW;
 use PVE::QemuServer::Cloudinit;
+use PVE::QemuServer::Console3270;
 use PVE::QemuServer::CGroup;
 use PVE::QemuServer::CCW;
 use PVE::QemuServer::CPUConfig qw(
@@ -980,7 +981,7 @@ my $terminal_fmt = {
         type => 'string',
         enum => [qw(2 3 4 5)],
         description => "The 3270 model the console emulates: 2 (24x80), 3 (32x80), 4 (43x80) or"
-            . " 5 (27x132). By default, the largest of the models 2 to 4 that fits the console.",
+            . " 5 (27x132). The session of the terminal emulates it as long as the VM runs.",
     },
 };
 PVE::JSONSchema::register_format('pve-qm-terminal', $terminal_fmt);
@@ -6199,6 +6200,9 @@ sub vm_start_nolock {
     my $qemu_pkg_string = PVE::QemuServer::QMPHelpers::get_qemu_package_string($vmid);
     syslog("info", "VM $vmid started with PID $pid using $qemu_pkg_string.");
 
+    # the 3270 consoles of s390x VMs stay connected as long as the VM runs
+    PVE::QemuServer::Console3270::start_sessions($vmid, $conf);
+
     if (defined(my $migrate = $res->{migrate})) {
         if ($migrate->{proto} eq 'tcp') {
             my $nodename = nodename();
@@ -6531,6 +6535,8 @@ sub vm_stop_cleanup {
     eval {
         PVE::QemuServer::QSD::quit($vmid)
             if PVE::QemuServer::Helpers::qsd_running_locally($vmid);
+
+        PVE::QemuServer::Console3270::stop_sessions($vmid, $conf);
 
         # ensure that no dbus-vmstate helper is left running in any case
         # at this point, it should never be still running, so quiesce any warnings

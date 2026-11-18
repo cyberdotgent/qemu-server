@@ -35,6 +35,7 @@ use PVE::QemuConfig;
 use PVE::QemuServer::Drive qw(is_valid_drivename parse_drive print_drive);
 use PVE::QemuServer::Helpers;
 use PVE::QemuServer::Agent;
+use PVE::QemuServer::Console3270;
 use PVE::QemuServer::ImportDisk;
 use PVE::QemuServer::Monitor qw(mon_cmd);
 use PVE::QemuServer::OVMF;
@@ -101,24 +102,6 @@ sub run_vnc_proxy {
         }
     }
     exit(0);
-}
-
-# c3270 picks the 3270 model from the terminal size once at startup and needs at least 24x80
-# (model 2). termproxy only sets the final size of the terminal after starting the command, so
-# wait for it a moment.
-# The screen sizes of the 3270 models, c3270 needs a terminal of at least that size.
-my $model_3270_sizes = { 2 => [24, 80], 3 => [32, 80], 4 => [43, 80], 5 => [27, 132] };
-
-my sub wait_for_3270_terminal_size {
-    my ($model) = @_;
-
-    my ($min_rows, $min_cols) = $model_3270_sizes->{ $model // 2 }->@*;
-    for (my $i = 0; $i < 20; $i++) {
-        my ($rows, $cols) = split(/\s+/, `stty size 2>/dev/null` // '');
-        # not a terminal or large enough
-        return if !defined($cols) || ($rows >= $min_rows && $cols >= $min_cols);
-        select(undef, undef, undef, 0.1);
-    }
 }
 
 sub print_recursive_hash {
@@ -870,12 +853,10 @@ __PACKAGE__->register_method({
             ? PVE::QemuServer::Helpers::get_s390x_consoles($conf)
             : [];
 
-        my $model;
         if ($iface && $iface =~ m/^terminal\d+$/) {
             die "interface '$iface' only exists for s390x VMs\n"
                 if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
             die "3270 terminal '$iface' is not configured\n" if !$conf->{$iface};
-            $model = PVE::QemuServer::parse_terminal($conf->{$iface})->{model};
         } elsif ($iface && $iface =~ m/^(?:sclp|sclplm|3270)$/) {
             die "interface '$iface' only exists for s390x VMs\n" if !scalar($consoles->@*);
             die "VM $vmid has no console '$iface' with its OS type, it has: "
@@ -902,20 +883,19 @@ __PACKAGE__->register_method({
             if $iface !~ m/^serial\d$/
             && !-S PVE::QemuServer::Helpers::console_socket($vmid, $iface);
 
-        my $cmd =
-            PVE::QemuServer::Helpers::get_terminal_command($vmid, $iface, $escape, $model);
-
-        my $is_3270 = $iface eq '3270' || $iface =~ m/^terminal\d+$/;
+        my $cmd;
         my $escapemsg = '';
-        if ($is_3270) {
-            $escapemsg = ' (press Ctrl+] for the c3270 prompt, quit to exit)';
-        } elsif ($escape) {
-            $escapemsg = sprintf(' (press Ctrl+%c to exit)', $escape + 0x40);
+        if (PVE::QemuServer::Console3270::is_3270_iface($iface)) {
+            # the 3270 consoles stay connected as long as the VM runs, attach to their session
+            PVE::QemuServer::Console3270::ensure_session($vmid, $iface);
+            $cmd = PVE::QemuServer::Console3270::attach_command($vmid, $iface);
+            $escapemsg = ' (press Ctrl+] to detach)';
+        } else {
+            $cmd = PVE::QemuServer::Helpers::get_terminal_command($vmid, $iface, $escape);
+            $escapemsg = sprintf(' (press Ctrl+%c to exit)', $escape + 0x40) if $escape;
         }
 
         print "starting serial terminal on interface ${iface}${escapemsg}\n";
-
-        wait_for_3270_terminal_size($model) if $is_3270;
 
         system($cmd->@*);
 

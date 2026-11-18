@@ -8,6 +8,7 @@ SOURCES=Agent.pm	\
 	Cfg2Cmd.pm	\
 	CCW.pm		\
 	CGroup.pm	\
+	Console3270.pm	\
 	Cloudinit.pm	\
 	CPUConfig.pm	\
 	CPUFlags.pm	\

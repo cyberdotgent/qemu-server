@@ -1,0 +1,179 @@
+package PVE::QemuServer::Console3270;
+
+# Persistent sessions for the 3270 consoles of s390x VMs.
+#
+# QEMU serves each 3270 device of an s390x VM (the integrated 3270 console 'sclp3270console' and
+# the 3270 terminals 'x-terminal3270') over TN3270 on a Unix socket. Without a connected client,
+# the guest sees a display that is switched off (intervention required), and a mainframe operating
+# system may lose its console. So every 3270 device gets a c3270 client for the whole lifetime of
+# the VM: each runs in a session of a tmux server per VM, which the systemd unit
+# pve-qemu-3270@<vmid>.service holds. The unit is bound to the scope of the VM and stops with it.
+# Viewers ('qm terminal', termproxy for the web console) attach to and detach from these sessions,
+# several viewers share a session.
+
+use strict;
+use warnings;
+
+use PVE::JSONSchema;
+use PVE::Tools qw(run_command);
+
+use PVE::QemuServer::Helpers;
+
+our $TMUX_CONFIG = '/usr/share/qemu-server/3270-tmux.conf';
+
+# The screen sizes of the 3270 models, c3270 needs one more row for its status line.
+my $model_sizes = { 2 => [24, 80], 3 => [32, 80], 4 => [43, 80], 5 => [27, 132] };
+
+# The model of the integrated 3270 console and of terminals without a configured model. It is
+# fixed for the lifetime of the VM, so use the one every 3270 application supports.
+our $DEFAULT_MODEL = 2;
+
+sub unit_name {
+    my ($vmid) = @_;
+    return "pve-qemu-3270\@$vmid.service";
+}
+
+sub tmux_socket {
+    my ($vmid) = @_;
+    return "${PVE::QemuServer::Helpers::var_run_tmpdir}/$vmid.3270.tmux";
+}
+
+sub is_3270_iface {
+    my ($iface) = @_;
+    return $iface eq '3270' || $iface =~ m/^terminal\d+$/;
+}
+
+# The 3270 consoles of a VM, { <iface> => <model> }: the integrated 3270 console, if its OS type
+# has one, and the 3270 terminals.
+sub get_consoles {
+    my ($conf) = @_;
+
+    return {} if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
+
+    my $consoles = {};
+    $consoles->{3270} = $DEFAULT_MODEL
+        if grep { $_ eq '3270' } PVE::QemuServer::Helpers::get_s390x_consoles($conf)->@*;
+    for (my $i = 0; $i < $PVE::QemuServer::Helpers::MAX_TERMINALS; $i++) {
+        my $value = $conf->{"terminal$i"} or next;
+        my $terminal = PVE::JSONSchema::parse_property_string('pve-qm-terminal', $value);
+        $consoles->{"terminal$i"} = $terminal->{model} // $DEFAULT_MODEL;
+    }
+    return $consoles;
+}
+
+sub tmux_command {
+    my ($vmid, @cmd) = @_;
+    return ['/usr/bin/tmux', '-u', '-S', tmux_socket($vmid), @cmd];
+}
+
+my sub has_session {
+    my ($vmid, $iface) = @_;
+
+    return 0 if !-S tmux_socket($vmid);
+    my $res = eval {
+        run_command(
+            tmux_command($vmid, 'has-session', '-t', "=$iface"),
+            quiet => 1,
+            noerr => 1,
+        );
+    };
+    return defined($res) && $res == 0;
+}
+
+# The command of the session of a 3270 console: c3270 with a fixed model, restarted should it
+# ever exit, for example when it lost the connection.
+sub session_command {
+    my ($vmid, $iface, $model) = @_;
+
+    my $socket = PVE::QemuServer::Helpers::console_socket($vmid, $iface);
+    return [
+        '/bin/sh',
+        '-c',
+        'while :; do /usr/bin/c3270 "$@"; sleep 1; done',
+        'c3270',
+        '-secure', # no c3270 prompt, viewers must not be able to quit or reconfigure it
+        '-model',
+        "3279-$model",
+        "U:$socket",
+    ];
+}
+
+# Create the missing sessions of the 3270 consoles of a VM, whose QEMU has their sockets. Only to
+# be called by the systemd unit, the tmux server must run in its control group.
+sub create_sessions {
+    my ($vmid, $conf) = @_;
+
+    my $consoles = get_consoles($conf);
+    for my $iface (sort keys $consoles->%*) {
+        next if !-S PVE::QemuServer::Helpers::console_socket($vmid, $iface);
+        next if has_session($vmid, $iface);
+
+        my $model = $consoles->{$iface};
+        my ($rows, $cols) = $model_sizes->{$model}->@*;
+        # The window keeps the size of the 3270 screen whatever the size of the viewers. Set per
+        # window: tmux 3.5a crashes creating sessions with a global 'window-size manual'.
+        run_command(tmux_command(
+            $vmid,
+            '-f',
+            $TMUX_CONFIG,
+            'new-session',
+            '-d',
+            '-s',
+            $iface,
+            '-x',
+            $cols,
+            '-y',
+            $rows + 1,
+            session_command($vmid, $iface, $model)->@*,
+            ';',
+            'set-option',
+            '-w',
+            '-t',
+            "=$iface:",
+            'window-size',
+            'manual',
+        ));
+    }
+}
+
+# Start the sessions of the 3270 consoles of a running VM, without waiting for them.
+sub start_sessions {
+    my ($vmid, $conf) = @_;
+
+    return if !scalar(keys get_consoles($conf)->%*);
+
+    eval { run_command(['/bin/systemctl', 'start', '--no-block', unit_name($vmid)]) };
+    warn "failed to start the 3270 console sessions of VM $vmid - $@" if $@;
+}
+
+sub stop_sessions {
+    my ($vmid, $conf) = @_;
+
+    # the unit is bound to the scope of the VM anyway, this is to not depend on that
+    return if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
+
+    eval { run_command(['/bin/systemctl', 'stop', unit_name($vmid)], quiet => 1, noerr => 1); };
+}
+
+# Make sure the session of the 3270 console $iface of a running VM exists, for example after an
+# update for VMs started before, or if the unit was stopped.
+sub ensure_session {
+    my ($vmid, $iface) = @_;
+
+    return if has_session($vmid, $iface);
+
+    # starts the unit, or creates the missing sessions if it is running
+    run_command(['/bin/systemctl', 'reload-or-restart', unit_name($vmid)]);
+
+    die "VM $vmid has no 3270 console session '$iface', see 'journalctl -u "
+        . unit_name($vmid) . "'\n"
+        if !has_session($vmid, $iface);
+}
+
+# Attach the terminal to the session of a 3270 console. Ctrl+] detaches.
+sub attach_command {
+    my ($vmid, $iface) = @_;
+    return tmux_command($vmid, 'attach-session', '-t', "=$iface");
+}
+
+1;

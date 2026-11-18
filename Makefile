@@ -18,7 +18,7 @@ all:
 .PHONY: tidy
 tidy:
 	git ls-files ':*.p[ml]'| xargs -n4 -P0 proxmox-perltidy
-	cd src; proxmox-perltidy bin/qm bin/qmextract bin/qmrestore usr/pve-bridgedown usr/pve-bridge
+	cd src; proxmox-perltidy bin/qm bin/qmextract bin/qmrestore usr/pve-bridgedown usr/pve-bridge usr/3270-sessions
 
 .PHONY: dinstall
 dinstall: deb

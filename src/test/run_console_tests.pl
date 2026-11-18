@@ -8,6 +8,8 @@ use File::Temp qw(tempdir);
 use Test::More;
 
 use PVE::File qw(file_set_contents);
+use PVE::QemuServer;
+use PVE::QemuServer::Console3270;
 use PVE::QemuServer::Helpers;
 
 my $consoles_tests = [
@@ -53,21 +55,6 @@ my $terminal_tests = [
             'STDIO,raw,echo=0,escape=0xf',
         ],
     },
-    {
-        name => 'integrated 3270 console uses c3270',
-        args => ['3270', 0x0f],
-        expected => ['c3270', 'U:/var/run/qemu-server/100.3270'],
-    },
-    {
-        name => '3270 terminal uses c3270',
-        args => ['terminal0', 0],
-        expected => ['c3270', 'U:/var/run/qemu-server/100.terminal0'],
-    },
-    {
-        name => '3270 terminal with a model',
-        args => ['terminal15', 0x0f, 5],
-        expected => ['c3270', '-model', '3279-5', 'U:/var/run/qemu-server/100.terminal15'],
-    },
 ];
 
 for my $test ($terminal_tests->@*) {
@@ -106,6 +93,81 @@ is_deeply(
         sclplmconsole => 1,
     },
     'device types from -device help',
+);
+
+# the persistent sessions of the 3270 consoles
+
+is_deeply(
+    PVE::QemuServer::Console3270::get_consoles({ arch => 's390x', ostype => 'l26' }),
+    {},
+    '3270 consoles: none for Linux without terminals',
+);
+is_deeply(
+    PVE::QemuServer::Console3270::get_consoles({ arch => 's390x', ostype => 'other' }),
+    { 3270 => 2 },
+    '3270 consoles: the integrated 3270 console of other OS types, model 2',
+);
+is_deeply(
+    PVE::QemuServer::Console3270::get_consoles({
+        arch => 's390x',
+        terminal0 => '0.0.0700',
+        terminal1 => 'devno=0.0.0701,model=4',
+        terminal15 => '070f,model=5',
+    }),
+    { 3270 => 2, terminal0 => 2, terminal1 => 4, terminal15 => 5 },
+    '3270 consoles: the terminals with their models',
+);
+is_deeply(
+    PVE::QemuServer::Console3270::get_consoles({
+        arch => 's390x',
+        ostype => 'l26',
+        terminal3 => '0.0.0300',
+    }),
+    { terminal3 => 2 },
+    '3270 consoles: terminals of a Linux VM',
+);
+is_deeply(
+    PVE::QemuServer::Console3270::get_consoles({ arch => 'x86_64', ostype => 'other' }),
+    {},
+    '3270 consoles: none on x86_64',
+);
+
+ok(PVE::QemuServer::Console3270::is_3270_iface($_), "$_ is a 3270 console")
+    for qw(3270 terminal0 terminal15);
+ok(!PVE::QemuServer::Console3270::is_3270_iface($_), "$_ is no 3270 console")
+    for qw(sclp sclplm serial0);
+
+is_deeply(
+    PVE::QemuServer::Console3270::session_command(100, 'terminal1', 4),
+    [
+        '/bin/sh',
+        '-c',
+        'while :; do /usr/bin/c3270 "$@"; sleep 1; done',
+        'c3270',
+        '-secure',
+        '-model',
+        '3279-4',
+        'U:/var/run/qemu-server/100.terminal1',
+    ],
+    'session command: c3270 with the model, restarted',
+);
+is_deeply(
+    PVE::QemuServer::Console3270::attach_command(100, '3270'),
+    [
+        '/usr/bin/tmux',
+        '-u',
+        '-S',
+        '/var/run/qemu-server/100.3270.tmux',
+        'attach-session',
+        '-t',
+        '=3270',
+    ],
+    'attach command: tmux session of the console',
+);
+is(
+    PVE::QemuServer::Console3270::unit_name(100),
+    'pve-qemu-3270@100.service',
+    'systemd unit of the sessions',
 );
 
 done_testing();
