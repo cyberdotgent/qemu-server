@@ -542,6 +542,13 @@ my $fbadesc = {
     format => $fba_fmt,
     description => "Use volume as s390x FBA DASD, an IBM 9336 fixed-block disk (n is 0 to "
         . ($MAX_FBA_DISKS - 1) . ").",
+    verbose_description => "Use volume as s390x FBA DASD, an IBM 9336 fixed-block disk (n is 0"
+        . " to "
+        . ($MAX_FBA_DISKS - 1)
+        . ").\n\nAn FBA DASD can be the cloud-init drive (media=cdrom)."
+        . " Note that Linux does not set DASDs online by default, so the guest image must do"
+        . " that for cloud-init to find the drive, for example with the kernel parameter"
+        . " 'dasd=0.0.0200' (or 'dasd_mod.dasd=autodetect') or with chzdev.",
 };
 PVE::JSONSchema::register_standard_option("pve-qm-fba", $fbadesc);
 
