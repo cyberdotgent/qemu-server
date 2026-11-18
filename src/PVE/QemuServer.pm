@@ -1187,7 +1187,6 @@ sub parse_hotplug_features {
     my $res = {};
 
     return $res if $data eq '0';
-    return $res if $arch && $arch eq 's390x'; # no hotplug, changes stay pending until next start
 
     $data = $confdesc->{hotplug}->{default} if $data eq '1';
 
@@ -1198,6 +1197,14 @@ sub parse_hotplug_features {
             die "invalid hotplug feature '$feature'\n";
         }
     }
+
+    # s390x: VirtIO CCW devices can be hot-plugged (the mainframe devices of QEMU builds with
+    # mainframe support, qeth adapters and DASDs, cannot),
+    # USB does not exist and CPU and memory hotplug are not supported; changes stay pending
+    if ($arch && $arch eq 's390x') {
+        delete $res->{$_} for qw(cpu memory usb);
+    }
+
     return $res;
 }
 
@@ -4198,9 +4205,13 @@ sub vm_devices_list {
     # Query from /machine/peripheral:
     # USB devices (there is no query-usb except experimental x-query-usb)
     # keyboard device (for aarch64)
+    # CCW devices (s390x, not on a PCI bus)
     my $resperipheral = mon_cmd($vmid, 'qom-list', path => '/machine/peripheral');
     foreach my $per (@$resperipheral) {
-        if ($per->{name} =~ m/^(?:usb(?:redirdev)?\d+|keyboard)$/) {
+        if (
+            $per->{name} =~ m/^(?:usb(?:redirdev)?\d+|keyboard)$/
+            || ($per->{type} // '') =~ m/^child<[^>]+-ccw>$/
+        ) {
             $devices->{ $per->{name} } = 1;
         }
     }
@@ -4228,8 +4239,9 @@ sub vm_deviceplug {
     my $devices_list = vm_devices_list($vmid);
     return 1 if defined($devices_list->{$deviceid});
 
-    # we can't hotplug bridges, so check if the necessary one exists
-    assert_pci_bridge_present($vmid, $deviceid);
+    # we can't hotplug bridges, so check if the necessary one exists (s390x has no PCI bridges,
+    # its virtio devices are CCW devices)
+    assert_pci_bridge_present($vmid, $deviceid) if $arch ne 's390x';
 
     if ($deviceid eq 'tablet') {
         qemu_deviceadd($vmid, print_tabletdevice_full($conf, $arch));
@@ -4941,6 +4953,9 @@ sub vmconfig_hotplug_pending {
                 # do nothing
             } elsif ($opt =~ m/^net(\d+)$/) {
                 die "skip\n" if !$hotplug_features->{network};
+                die "skip\n"
+                    if !PVE::QemuServer::Network::is_hotpluggable(
+                        PVE::QemuServer::Network::parse_net($conf->{$opt}));
                 vm_deviceunplug($vmid, $conf, $opt);
                 my $net = PVE::QemuServer::Network::parse_net($conf->{$opt});
                 PVE::Network::SDN::Vnets::del_ips_from_mac(
@@ -4950,7 +4965,9 @@ sub vmconfig_hotplug_pending {
                 );
             } elsif (is_valid_drivename($opt)) {
                 die "skip\n"
-                    if !$hotplug_features->{disk} || $opt =~ m/(efidisk|ide|sata|tpmstate)(\d+)/;
+                    if !$hotplug_features->{disk}
+                    || $opt =~ m/(efidisk|ide|sata|tpmstate)(\d+)/
+                    || $opt =~ m/^(?:fba|ckd)\d+$/; # DASDs (s390x) cannot be hot-plugged
                 vm_deviceunplug($vmid, $conf, $opt);
                 vmconfig_delete_or_detach_drive($vmid, $storecfg, $conf, $opt, $force);
             } elsif ($opt =~ m/^memory$/) {
@@ -5050,6 +5067,7 @@ sub vmconfig_hotplug_pending {
                     );
             } elsif (is_valid_drivename($opt)) {
                 die "skip\n" if $opt eq 'efidisk0' || $opt eq 'tpmstate0';
+                die "skip\n" if $opt =~ m/^(?:fba|ckd)\d+$/; # DASDs (s390x) cannot be hot-plugged
                 # some changes can be done without hotplug
                 my $drive = parse_drive($opt, $value);
                 if (drive_is_cloudinit($drive)) {
@@ -5313,13 +5331,16 @@ sub vmconfig_update_net {
     my ($storecfg, $conf, $hotplug, $vmid, $opt, $value, $arch, $machine_type) = @_;
 
     my $newnet = PVE::QemuServer::Network::parse_net($value);
+    $hotplug = 0 if !PVE::QemuServer::Network::is_hotpluggable($newnet);
 
     if ($conf->{$opt}) {
         my $oldnet = PVE::QemuServer::Network::parse_net($conf->{$opt});
+        $hotplug = 0 if !PVE::QemuServer::Network::is_hotpluggable($oldnet);
 
         if (
             safe_string_ne($oldnet->{model}, $newnet->{model})
             || safe_string_ne($oldnet->{macaddr}, $newnet->{macaddr})
+            || safe_string_ne($oldnet->{devno}, $newnet->{devno})
             || safe_num_ne($oldnet->{queues}, $newnet->{queues})
             || safe_num_ne($oldnet->{mtu}, $newnet->{mtu})
             || !($newnet->{bridge} && $oldnet->{bridge})

@@ -196,11 +196,15 @@ sub resolve_machine_alias($machine) {
 
     die "no +pveX version set\n" if !defined($pve_version);
 
+    my ($pin_version) = get_test_qemu_version() =~ m/^(\d+\.\d+)/;
+
+    # the alias of the current s390x machine version, like QEMU reports it in query-machines
+    return "s390-ccw-virtio-$pin_version+$pve_version" if $type && $type eq 's390-ccw-virtio';
+
     if ($type && $type !~ m/^(?:pc|q35|virt)$/) {
         return $machine;
     }
 
-    my ($pin_version) = get_test_qemu_version() =~ m/^(\d+\.\d+)/;
     my $new_machine = PVE::QemuServer::Machine::expand_basic_machine_type($type, $pin_version);
 
     return $new_machine . "+$pve_version";
@@ -403,6 +407,8 @@ sub mocked_qmp_query($execute, $arguments) {
         $machine->{'pve-version'} = $pve_version if $pve_version;
         return [$machine];
     } elsif ($execute eq 'query-pci') {
+        # the CCW devices of s390x are not on a PCI bus
+        return [{ bus => 0, devices => [] }] if $vm_state->{machine} =~ m/^s390-ccw-virtio/;
         # everything that is not a disk or memory DIMM is reported as a PCI device with the qdev ID
         my @devices =
             map { { qdev_id => $_ } }
@@ -422,7 +428,11 @@ sub mocked_qmp_query($execute, $arguments) {
     } elsif ($execute eq 'qom-list') {
         die "unexpected qom-list path '$arguments->{path}'\n"
             if $arguments->{path} ne '/machine/peripheral';
-        return [map { { name => $_ } } sorted_devices()];
+        my $devices = $vm_state->{devices};
+        return [
+            map { { name => $_, type => 'child<' . ($devices->{$_}->{driver} // 'unknown') . '>' } }
+                sorted_devices()
+        ];
     } elsif ($execute eq 'query-iothreads') {
         my $objects = $vm_state->{objects};
         return [

@@ -232,6 +232,13 @@ sub parse_net {
     return $res;
 }
 
+# Whether a network device can be hot-plugged. The qeth-ccw device of QEMU builds with mainframe
+# support (s390x) cannot.
+sub is_hotpluggable {
+    my ($net) = @_;
+    return $net->{model} ne 'qeth';
+}
+
 # ipconfigX ip=cidr,gw=ip,ip6=cidr,gw6=ip
 sub parse_ipconfig {
     my ($data) = @_;
