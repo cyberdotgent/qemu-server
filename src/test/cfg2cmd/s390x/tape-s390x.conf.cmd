@@ -16,7 +16,8 @@
   -m 2048 \
   -object '{"id":"throttle-drive-virtio0","limits":{},"qom-type":"throttle-group"}' \
   -chardev 'socket,id=sclplm,path=/var/run/qemu-server/8006.sclplm,server=on,wait=off' \
-  -device 'sclplmconsole,chardev=sclplm' \
+  -chardev 'file,id=sclplm-hardcopy,path=/var/log/qemu-server/8006-sclplm.log,append=on' \
+  -device 'sclplmconsole,chardev=sclplm,hardcopy=sclplm-hardcopy' \
   -chardev 'socket,id=sclp3270,path=/var/run/qemu-server/8006.3270,server=on,wait=off,tn3270=on' \
   -device 'sclp3270console,chardev=sclp3270' \
   -drive 'if=none,id=drive-tape0,file=/var/lib/vz/template/iso/SYSTEM.AWS,format=raw,read-only=on' \

@@ -414,6 +414,12 @@ $qemu_server_helpers->mock(
     kvm_device_types => sub {
         return { map { $_ => 1 } qw(3590-ccw qeth-ccw sclp3270console x-terminal3270) };
     },
+    kvm_device_has_property => sub {
+        my ($binary, $type, $property) = @_;
+        # QEMU-mod with the hardcopy of the line-mode console
+        return 1 if $type eq 'sclplmconsole' && $property eq 'hardcopy';
+        return $qemu_server_helpers->original('kvm_device_has_property')->(@_);
+    },
     kvm_machine_types => sub {
         # x-test-sys and x-test-lpar are made-up unversioned machine types
         my @types = qw(none s390-ccw-virtio s390-ccw-virtio-11.1 x-test-sys x-test-lpar);

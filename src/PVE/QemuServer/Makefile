@@ -33,6 +33,7 @@ SOURCES=Agent.pm	\
 	QSD.pm		\
 	RNG.pm		\
 	RunState.pm	\
+	SclpLog.pm	\
 	Snapshot.pm	\
 	StateFile.pm	\
 	Tape.pm		\

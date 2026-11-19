@@ -58,6 +58,7 @@ use PVE::QemuServer::PCI;
 use PVE::QemuServer::QMPHelpers;
 use PVE::QemuServer::RNG;
 use PVE::QemuServer::RunState;
+use PVE::QemuServer::SclpLog;
 use PVE::QemuServer::Tape;
 use PVE::QemuServer::USB;
 use PVE::QemuServer::Virtiofs qw(max_virtiofs);
@@ -2192,6 +2193,8 @@ __PACKAGE__->register_method({
             { subdir => 'unlink' },
             { subdir => 'vncproxy' },
             { subdir => 'termproxy' },
+            { subdir => 'sclp-log' },
+            { subdir => 'sclp-command' },
             { subdir => 'migrate' },
             { subdir => 'resize' },
             { subdir => 'move' },
@@ -2539,6 +2542,132 @@ __PACKAGE__->register_method({
         };
 
         return $rpcenv->fork_worker('qmexportova', $vmid, $authuser, $worker);
+    },
+});
+
+my $assert_sclp_log = sub {
+    my ($vmid) = @_;
+
+    my $conf = PVE::QemuConfig->load_config($vmid);
+    die "VM $vmid has no SCLP line-mode console (only s390x VMs with another OS type than"
+        . " Linux)\n"
+        if !PVE::QemuServer::SclpLog::has_hardcopy($conf);
+    return $conf;
+};
+
+__PACKAGE__->register_method({
+    name => 'sclp_log',
+    path => '{vmid}/sclp-log',
+    method => 'GET',
+    proxyto => 'node',
+    description => "Read the hardcopy of the SCLP line-mode console of an s390x VM: every message"
+        . " of the guest since the VM was started, and a marker line for every IPL. Without"
+        . " 'start', the end of the log ('tail' bytes, whole lines).",
+    permissions => {
+        check => ['perm', '/vms/{vmid}', ['VM.Console']],
+    },
+    parameters => {
+        additionalProperties => 0,
+        properties => {
+            node => get_standard_option('pve-node'),
+            vmid =>
+                get_standard_option('pve-vmid', { completion => \&PVE::QemuServer::complete_vmid }),
+            start => {
+                description => "Byte offset to read from, the 'end' of the previous read.",
+                type => 'integer',
+                minimum => 0,
+                optional => 1,
+            },
+            tail => {
+                description => "Without 'start', read this many bytes at the end of the log.",
+                type => 'integer',
+                minimum => 0,
+                default => 65536,
+                optional => 1,
+            },
+            limit => {
+                description => "Read at most this many bytes.",
+                type => 'integer',
+                minimum => 4096,
+                maximum => 16 * 1024 * 1024,
+                default => 1024 * 1024,
+                optional => 1,
+            },
+            previous => {
+                description => "Read the log of the previous run of the VM instead.",
+                type => 'boolean',
+                default => 0,
+                optional => 1,
+            },
+        },
+    },
+    returns => {
+        type => 'object',
+        properties => {
+            id => {
+                description => "Identifies the log: a new one starts with every start of the VM."
+                    . " Empty if there is none.",
+                type => 'string',
+            },
+            size => { description => "Size of the log in bytes.", type => 'integer' },
+            start => { description => "Byte offset of 'data'.", type => 'integer' },
+            end => { description => "Byte offset after 'data'.", type => 'integer' },
+            complete => {
+                description => "Whether 'data' reaches the end of the log.",
+                type => 'boolean',
+            },
+            data => { description => "Whole lines of the log (LF line ends).", type => 'string' },
+        },
+    },
+    code => sub {
+        my ($param) = @_;
+
+        my $vmid = $param->{vmid};
+        $assert_sclp_log->($vmid);
+
+        return PVE::QemuServer::SclpLog::read_log(
+            $vmid, $param->{start}, $param->{tail}, $param->{limit}, $param->{previous},
+        );
+    },
+});
+
+__PACKAGE__->register_method({
+    name => 'sclp_command',
+    path => '{vmid}/sclp-command',
+    method => 'POST',
+    protected => 1,
+    proxyto => 'node',
+    description => "Send an operator command to the SCLP line-mode console of a running s390x VM,"
+        . " as if it was entered there. The guest's messages (usually including the command)"
+        . " appear in the hardcopy, see 'sclp-log'.",
+    permissions => {
+        check => ['perm', '/vms/{vmid}', ['VM.Console']],
+    },
+    parameters => {
+        additionalProperties => 0,
+        properties => {
+            node => get_standard_option('pve-node'),
+            vmid => get_standard_option(
+                'pve-vmid',
+                { completion => \&PVE::QemuServer::complete_vmid_running },
+            ),
+            command => {
+                description => "The command, one line.",
+                type => 'string',
+                maxLength => $PVE::QemuServer::SclpLog::MAX_COMMAND_LENGTH,
+            },
+        },
+    },
+    returns => { type => 'null' },
+    code => sub {
+        my ($param) = @_;
+
+        my $vmid = $param->{vmid};
+        $assert_sclp_log->($vmid);
+        die "VM $vmid not running\n" if !PVE::QemuServer::check_running($vmid);
+
+        PVE::QemuServer::SclpLog::send_command($vmid, $param->{command});
+        return;
     },
 });
 

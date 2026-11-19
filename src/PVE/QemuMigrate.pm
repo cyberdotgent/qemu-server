@@ -3,6 +3,7 @@ package PVE::QemuMigrate;
 use strict;
 use warnings;
 
+use Encode;
 use IO::File;
 use IPC::Open2;
 use Storable qw(dclone);
@@ -34,6 +35,7 @@ use PVE::QemuServer::Agent;
 use PVE::QemuServer::BlockJob;
 use PVE::QemuServer::CPUConfig;
 use PVE::QemuServer::Console3270;
+use PVE::QemuServer::SclpLog;
 use PVE::QemuServer::DASD;
 use PVE::QemuServer::Drive qw(checked_volume_format update_tpmstate_size);
 use PVE::QemuServer::Helpers qw(min_version);
@@ -1719,6 +1721,27 @@ sub phase3 {
     return;
 }
 
+sub transfer_sclp_log {
+    my ($self, $vmid) = @_;
+
+    my $path = PVE::QemuServer::SclpLog::log_path($vmid);
+    return if !-f $path;
+
+    my $log = PVE::Tools::file_get_contents($path, 1024 * 1024 * 1024);
+    $log .= Encode::encode(
+        'UTF-8',
+        PVE::QemuServer::SclpLog::marker_line(
+            "migrated from " . PVE::INotify::nodename() . " to $self->{node}"),
+    );
+    # untaint, the path is built from the VMID
+    my ($target_path) = $path =~ m|^(/var/log/qemu-server/\d+-sclplm\.log)$|
+        or die "unexpected log path '$path'\n";
+    my $cmd = build_ssh_command($self->{rem_ssh}, ['/bin/sh', '-c', "cat >> $target_path"]);
+    PVE::Tools::run_command($cmd, input => $log, outfunc => sub { }, errfunc => sub { });
+    unlink($path);
+    $self->log('info', "moved the line-mode console log to the target");
+}
+
 sub phase3_cleanup {
     my ($self, $vmid, $err) = @_;
 
@@ -1773,6 +1796,14 @@ sub phase3_cleanup {
                     $self->{errors} = 1;
                 }
             }
+        }
+
+        # The hardcopy of the line-mode console of an s390x VM follows it: append the log to the
+        # (new, empty) one on the target before the VM resumes there, so nothing gets in between.
+        if (!$self->{opts}->{remote} && PVE::QemuServer::SclpLog::has_hardcopy($conf)) {
+            eval { $self->transfer_sclp_log($vmid) };
+            $self->log('warn', "moving the line-mode console log to the target failed - $@")
+                if $@;
         }
 
         # The 3270 consoles of an s390x VM must be connected while it runs: start their sessions

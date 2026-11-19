@@ -105,6 +105,7 @@ use PVE::QemuServer::QMPHelpers
 use PVE::QemuServer::QSD;
 use PVE::QemuServer::RNG qw(parse_rng print_rng_device_commandline print_rng_object_commandline);
 use PVE::QemuServer::RunState;
+use PVE::QemuServer::SclpLog;
 use PVE::QemuServer::StateFile;
 use PVE::QemuServer::Tape;
 use PVE::QemuServer::USB;
@@ -1997,6 +1998,7 @@ sub destroy_vm {
         PVE::QemuConfig->write_config($vmid, $replacement_conf);
     } else {
         PVE::QemuConfig->destroy_config($vmid);
+        PVE::QemuServer::SclpLog::remove_logs($vmid);
     }
 }
 
@@ -3666,7 +3668,16 @@ sub config_to_command {
                 push @$devices, '-device', 'sclpconsole,chardev=sclp';
             } elsif ($console eq 'sclplm') {
                 push @$devices, '-chardev', "socket,id=sclplm,path=$socket,server=on,wait=off";
-                push @$devices, '-device', 'sclplmconsole,chardev=sclplm';
+                # the hardcopy of the console (PVE::QemuServer::SclpLog), with QEMU-mod
+                if (PVE::QemuServer::Helpers::kvm_device_has_property(
+                    $kvm_binary, 'sclplmconsole', 'hardcopy',
+                )) {
+                    push @$devices, '-chardev', PVE::QemuServer::SclpLog::chardev_option($vmid);
+                    push @$devices, '-device',
+                        'sclplmconsole,chardev=sclplm,' . PVE::QemuServer::SclpLog::device_property();
+                } else {
+                    push @$devices, '-device', 'sclplmconsole,chardev=sclplm';
+                }
             } elsif ($console eq '3270') {
                 # not part of upstream QEMU, but of QEMU builds with mainframe support
                 if (!PVE::QemuServer::Helpers::kvm_device_types($kvm_binary)->{sclp3270console}) {
@@ -6087,6 +6098,11 @@ sub vm_start_nolock {
 
         my $memory = get_current_memory($conf->{memory});
         $start_timeout = $params->{timeout} // config_aware_timeout($conf, $memory, $resume);
+
+        # a new hardcopy of the line-mode console, or the one of the saved state continued
+        if (grep { $_ eq PVE::QemuServer::SclpLog::chardev_option($vmid) } $cmd->@*) {
+            PVE::QemuServer::SclpLog::prepare_start($vmid, $statefile && !$migratedfrom);
+        }
 
         push $cmd->@*, $state_cmdline->@*;
 
