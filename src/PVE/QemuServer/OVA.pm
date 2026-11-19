@@ -14,8 +14,9 @@ package PVE::QemuServer::OVA;
 #
 # Disk images are streamOptimized VMDK by default (the OVA norm, compressed), qcow2 (compressed) or
 # raw on request. All three keep the content byte for byte: a CKD volume (a Hercules CKD image with
-# its 512-byte header) is imported as the same volume. Tape media (ISO images content) are not
-# included, only referenced: the import uses them if the same volume exists there.
+# its 512-byte header) is imported as the same volume. The media in the tape drives (AWSTAPE images
+# of the ISO images content) are included as they are, unless left out on request: then the OVA
+# only names them, and an import uses them if the same volume exists there.
 
 use strict;
 use warnings;
@@ -112,23 +113,18 @@ my sub capacity_with_unit {
     return ($bytes, 'byte');
 }
 
-my sub ckd_model_of {
-    my ($cylinders) = @_;
-    return '3390' if !defined($cylinders);
-    my $models = PVE::QemuServer::DASD::ckd_models();
-    for my $model (sort keys %$models) {
-        return $model if $models->{$model} == $cylinders;
-    }
-    return '3390';
-}
-
 my sub drive_options {
     my ($drive) = @_;
 
     my $copy = {%$drive};
     delete $copy->@{qw(size format import-from)};
+    # a DASD keeps the name of its volume (like the VOLSER) on import, if it is free there
+    if (PVE::QemuServer::Drive::drive_is_dasd($drive)) {
+        my $name = PVE::QemuServer::DASD::volume_name_of_volid($drive->{file});
+        $copy->{name} = $name if defined($name);
+    }
     $copy->{file} = 'none'; # printed first, as default key
-    return PVE::QemuServer::Drive::print_drive($copy) =~ s/^none,?//r;
+    return PVE::QemuServer::Drive::print_drive($copy, 1) =~ s/^none,?//r;
 }
 
 =head3 export_disks
@@ -168,17 +164,57 @@ sub export_disks {
     return ($disks, $warnings);
 }
 
+=head3 export_media
+
+    my $media = export_media($conf, $name);
+
+The media in the tape drives of C<$conf> that go into an OVA named C<$name>, as hash tape drive key
+=> C<{ file, href }>: C<file> is the medium as configured (a volume ID or an absolute path), C<href>
+the name of the archive member, the file name of the medium if it is an '.aws' file with a plain
+name, '<name>-<key>.aws' otherwise. A medium in several drives is included once.
+
+=cut
+
+sub export_media {
+    my ($conf, $name) = @_;
+
+    my $media = {};
+    my $href_of = {};
+    my $used = {};
+    for my $key (sort grep { PVE::QemuServer::Tape::is_tape_key($_) } keys %$conf) {
+        my $tape = eval { PVE::QemuServer::Tape::parse_tape($conf->{$key}) } or next;
+        my $file = $tape->{file};
+        next if !defined($file) || $file eq 'none';
+        my $href = $href_of->{$file};
+        if (!defined($href)) {
+            my ($base) = $file =~ m!([^/:]+)$!;
+            $href = $base
+                if defined($base)
+                && $base =~ m/^[A-Za-z0-9_+\-][A-Za-z0-9_+.\-]*\.aws$/i
+                && !$used->{ lc($base) };
+            $href //= "$name-$key.aws";
+            $used->{ lc($href) } = 1;
+            $href_of->{$file} = $href;
+        }
+        $media->{$key} = { file => $file, href => $href };
+    }
+    return $media;
+}
+
 =head3 ovf_descriptor
 
-    my $xml = ovf_descriptor($vmid, $conf, $disks, $arch);
+    my $xml = ovf_descriptor($vmid, $conf, $disks, $arch, [$media]);
 
 The OVF descriptor for VM C<$vmid> with config C<$conf>. C<$disks> are the exported disks as list of
 C<{ key, drive, href, file_size, capacity, format }> (C<format> is a key of C<disk_formats()>).
+C<$media> are the included tape media, see C<export_media()>, with their C<file_size>.
 
 =cut
 
 sub ovf_descriptor {
-    my ($vmid, $conf, $disks, $arch) = @_;
+    my ($vmid, $conf, $disks, $arch, $media) = @_;
+
+    $media //= {};
 
     my $ns = $PVE_OVF_NS;
     my $name = $conf->{name} // "vm$vmid";
@@ -211,6 +247,17 @@ sub ovf_descriptor {
             "    <File ovf:id=\"file-$disk->{key}\" ovf:href=\"",
             xml_escape($disk->{href}),
             "\" ovf:size=\"$disk->{file_size}\"/>",
+        );
+    }
+    my $media_file_ids = {};
+    for my $key (sort keys %$media) {
+        my $medium = $media->{$key};
+        next if $media_file_ids->{ $medium->{href} };
+        $media_file_ids->{ $medium->{href} } = "file-$key";
+        $add->(
+            "    <File ovf:id=\"file-$key\" ovf:href=\"",
+            xml_escape($medium->{href}),
+            "\" ovf:size=\"$medium->{file_size}\"/>",
         );
     }
     $add->('  </References>');
@@ -332,14 +379,15 @@ sub ovf_descriptor {
         my $drive = $disk->{drive};
         my ($desc_disk, $subtype_disk, $devno);
         if ($bus eq 'ckd') {
-            $subtype_disk = ckd_model_of($drive->{cylinders});
+            $subtype_disk = $drive->{model}
+                // PVE::QemuServer::DASD::ckd_model_of_cylinders($drive->{cylinders});
             $devno = $drive->{devno};
             $desc_disk = "IBM $subtype_disk CKD DASD";
             $desc_disk .= ", $drive->{cylinders} cylinders" if $drive->{cylinders};
         } elsif ($bus eq 'fba') {
-            $subtype_disk = '9336';
+            $subtype_disk = $drive->{model} // '9336';
             $devno = $drive->{devno};
-            $desc_disk = 'IBM 9336 FBA DASD';
+            $desc_disk = "IBM $subtype_disk FBA DASD";
         } else {
             $desc_disk = "Hard disk $disk->{key}";
         }
@@ -381,12 +429,21 @@ sub ovf_descriptor {
             : sprintf('0.0.%04x', 0x0580 + $index);
         my $ident = $tape->{ident} // '3590';
         my $medium = $tape->{file} // 'none';
+        my $included = $media->{$key};
+        my $medium_desc = '';
+        if ($included) {
+            $medium_desc = ", medium $included->{href}";
+        } elsif ($medium ne 'none') {
+            $medium_desc = ", medium $medium (not included)";
+        }
         $item->(
             0,
             Address => $devno,
-            Description => "IBM $ident tape drive"
-                . ($medium ne 'none' ? ", medium $medium (not included)" : ''),
+            Description => "IBM $ident tape drive$medium_desc",
             ElementName => $key,
+            HostResource => $included
+            ? "ovf:/file/$media_file_ids->{ $included->{href} }"
+            : undef,
             ResourceSubType => $ident,
             ResourceType => 18,
         );
@@ -482,7 +539,8 @@ sub ova_name {
     my $volid = export_ova($storecfg, $vmid, $storeid, $opts);
 
 Export the stopped VM C<$vmid> as OVA into the 'import' content of storage C<$storeid>. Options
-in C<$opts>: C<filename> (default: VM name), C<format> (disk image format, default 'vmdk').
+in C<$opts>: C<filename> (default: VM name), C<format> (disk image format, default 'vmdk'),
+C<include-media> (the media of the tape drives, default 1).
 Returns the volume ID of the OVA. Runs in a worker; the VM is locked ('export') meanwhile.
 
 =cut
@@ -526,6 +584,7 @@ sub export_ova {
         my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
         my ($disks, $warnings) = export_disks($conf);
         warn "warning: $_\n" for @$warnings;
+        my $media = ($opts->{'include-media'} // 1) ? export_media($conf, $name) : {};
 
         File::Path::make_path($stage);
         my $manifest = '';
@@ -568,19 +627,43 @@ sub export_ova {
             $disk->{format} = $format;
         }
 
+        # the tape media as they are (AWSTAPE images, read-only)
+        my @media_files;
+        for my $key (sort keys %$media) {
+            my $medium = $media->{$key};
+            my $href = $medium->{href};
+            if (!grep { $_ eq $href } @media_files) {
+                my $file = $medium->{file};
+                my $path = $file;
+                if ($file !~ m|^/|) {
+                    PVE::Storage::activate_volumes($storecfg, [$file]);
+                    $path = PVE::Storage::path($storecfg, $file);
+                }
+                die "$key: medium '$file' does not exist\n" if !-f $path;
+                print "$key: including medium '$file' as $href\n";
+                run_command(
+                    ['cp', '--reflink=auto', '--', $path, "$stage/$href"],
+                    errmsg => "$key: unable to copy the medium '$file'",
+                );
+                push @media_files, $href;
+            }
+            $medium->{file_size} = -s "$stage/$href";
+        }
+
         my $ovf = "$name.ovf";
         PVE::Tools::file_set_contents(
             "$stage/$ovf",
-            ovf_descriptor($vmid, $conf, $disks, $arch),
+            ovf_descriptor($vmid, $conf, $disks, $arch, $media),
         );
         $sha->($ovf);
         $sha->($_->{href}) for @$disks;
+        $sha->($_) for @media_files;
         my $mf = "$name.mf";
         PVE::Tools::file_set_contents("$stage/$mf", $manifest);
 
         # ustar unless a file is too large for it (8 GiB): then GNU tar's base-256 sizes, as other
         # OVA writers do
-        my @files = ($ovf, $mf, map { $_->{href} } @$disks);
+        my @files = ($ovf, $mf, (map { $_->{href} } @$disks), @media_files);
         my $large = grep { (-s "$stage/$_") >= 8 * 1024**3 } @files;
         print "writing $volid\n";
         run_command(

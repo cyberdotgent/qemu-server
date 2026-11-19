@@ -1318,6 +1318,17 @@ my sub check_install_media_access {
         next if !$param->{$key};
         my $tape = eval { PVE::QemuServer::Tape::parse_tape($param->{$key}) };
         raise_param_exc({ $key => $@ }) if $@;
+        if (defined(my $source = $tape->{'import-from'})) {
+            # a medium imported from an OVA into the ISO images content of a storage
+            my $import = eval { PVE::QemuServer::Tape::media_imports({ $key => $param->{$key} }) };
+            raise_param_exc({ $key => $@ }) if $@;
+            my $storeid = $import->[0]->[2];
+            PVE::Storage::check_volume_access(
+                $rpcenv, $authuser, $storecfg, $vmid, $source, 'import',
+            );
+            $rpcenv->check($authuser, "/storage/$storeid", ['Datastore.AllocateTemplate']);
+            next;
+        }
         next if $tape->{file} eq 'none';
         PVE::Storage::check_volume_access(
             $rpcenv, $authuser, $storecfg, $vmid, $tape->{file}, 'iso',
@@ -1943,6 +1954,9 @@ __PACKAGE__->register_method({
                 my $conf = $param;
                 my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
 
+                # tape media from an OVA, before the drives are written to the config
+                PVE::QemuServer::Tape::import_media($conf);
+
                 for my $opt (sort keys $param->%*) {
                     next if $opt !~ m/^scsi\d+$/;
                     assert_scsi_feature_compatibility($opt, $conf, $storecfg, $param->{$opt});
@@ -2481,6 +2495,14 @@ __PACKAGE__->register_method({
                 type => 'string',
                 enum => PVE::QemuServer::OVA::disk_formats(),
                 default => 'vmdk',
+                optional => 1,
+            },
+            'include-media' => {
+                description => "Include the media loaded in the tape drives (AWSTAPE images) in"
+                    . " the OVA, so an import can load them again. Without, the OVA only names"
+                    . " them. A drive without a medium has nothing to include.",
+                type => 'boolean',
+                default => 1,
                 optional => 1,
             },
         },
@@ -3062,6 +3084,9 @@ my $update_vm_api = sub {
 
     my $updatefn = sub {
         my $conf = $load_and_check_config->(1);
+
+        # tape media from an OVA, before the drives are written to the config
+        PVE::QemuServer::Tape::import_media($param);
 
         PVE::Cluster::log_msg('info', $authuser, "update VM $vmid: " . join(' ', @paramarr));
 

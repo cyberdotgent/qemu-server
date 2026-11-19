@@ -18,16 +18,17 @@ use PVE::Tools qw(run_command);
 
 use PVE::QemuServer::DASD;
 use PVE::QemuServer::OVA;
+use PVE::QemuServer::Tape;
 
 my $expected_dir = 'ova';
 
 my $mf_conf = {
     boot => 'order=ckd0;net0',
-    ckd0 => 'local-lvm:vm-300-SYSRS1,cylinders=10017,devno=0.0.0200,size=8339153K',
+    ckd0 => 'local-lvm:vm-300-SYSRS1,cylinders=10017,devno=0.0.0200,model=3390-9,size=8339153K',
     ckd1 => 'local:300/vm-300-WORK01.qcow2,cylinders=10017,devno=0.0.0201,size=8339153K',
     ckd2 => 'local-lvm:vm-300-WORK02,cylinders=10017,devno=0.0.0202,size=8339153K',
     ipl => 'ckd0',
-    machine => 'mtm-3907',
+    machine => 'czam',
     memory => 2048,
     meta => 'creation-qemu=11.1.90,ctime=1795037352',
     name => 'mf01',
@@ -101,7 +102,14 @@ my sub compare_expected($name, $got) {
     is_deeply([map { $_->{key} } @$disks], [qw(ckd0 ckd1 ckd2)], 'mf01: exported disks');
     is_deeply($warnings, [], 'mf01: nothing left out');
 
-    my $xml = PVE::QemuServer::OVA::ovf_descriptor(300, $mf_conf, $disks, 's390x');
+    my $media = PVE::QemuServer::OVA::export_media($mf_conf, 'mf01');
+    is_deeply(
+        $media,
+        { tape0 => { file => 'local:iso/SYSTEM.AWS', href => 'SYSTEM.AWS' } },
+        'mf01: the tape medium is included under its file name',
+    );
+    $media->{tape0}->{file_size} = 257949696;
+    my $xml = PVE::QemuServer::OVA::ovf_descriptor(300, $mf_conf, $disks, 's390x', $media);
     compare_expected('mf01.ovf', $xml);
     my $xpc = xpc_of($xml);
 
@@ -136,6 +144,21 @@ my sub compare_expected($name, $got) {
     is(scalar(@tapes), 1, 'mf01: one tape drive');
     is($tapes[0]->getAttribute('ovf:required'), 'false', 'mf01: tape drive not required');
     is($xpc->findvalue('rasd:Address', $tapes[0]), '0.0.0580', 'mf01: tape default devno');
+    is(
+        $xpc->findvalue('rasd:HostResource', $tapes[0]),
+        'ovf:/file/file-tape0',
+        'mf01: the tape drive refers to its medium',
+    );
+    is(
+        $xpc->findvalue('//ovf:References/ovf:File[@ovf:id="file-tape0"]/@ovf:href'),
+        'SYSTEM.AWS',
+        'mf01: the medium is a file of the OVA',
+    );
+    is(
+        $xpc->findvalue('//ovf:DiskSection/ovf:Disk[@ovf:fileRef="file-tape0"]/@ovf:diskId'),
+        '',
+        'mf01: the medium is no disk',
+    );
     my @terms = $xpc->findnodes('//ovf:Item[rasd:ResourceType=1]');
     is(scalar(@terms), 3, 'mf01: three 3270 terminals');
     is($xpc->findvalue('rasd:Address', $terms[1]), '0.0.0301', 'mf01: terminal1 devno');
@@ -151,11 +174,21 @@ my sub compare_expected($name, $got) {
     );
     is(
         $pve->{ckd0}->getAttribute('pve:value'),
-        'cylinders=10017,devno=0.0.0200',
-        'mf01: ckd0 options without volume and size',
+        'cylinders=10017,devno=0.0.0200,model=3390-9,name=SYSRS1',
+        'mf01: ckd0 options without volume and size, with the volume name',
+    );
+    is(
+        $pve->{ckd1}->getAttribute('pve:value'),
+        'cylinders=10017,devno=0.0.0201,name=WORK01',
+        'mf01: ckd1 options, the model is not stored in older configs',
+    );
+    is(
+        $disk_items[1] && $xpc->findvalue('rasd:ResourceSubType', $disk_items[1]),
+        '3390-9',
+        'mf01: the model of an older config comes from the cylinders',
     );
     is($pve->{ckd0}->getAttribute('pve:diskId'), 'ckd0', 'mf01: ckd0 refers to its disk');
-    is($pve->{machine}->getAttribute('pve:value'), 'mtm-3907', 'mf01: machine type');
+    is($pve->{machine}->getAttribute('pve:value'), 'czam', 'mf01: machine type');
     is(
         $xpc->findvalue('//pve:ConfigSection/@pve:arch'), 's390x', 'mf01: section architecture',
     );
@@ -197,6 +230,30 @@ my sub compare_expected($name, $got) {
     );
 }
 
+# included media: plain .aws names kept, others named after the drive, a shared medium once
+is_deeply(
+    PVE::QemuServer::OVA::export_media(
+        {
+            tape0 => 'local:iso/a.aws,devno=0.0.0580',
+            tape1 => 'other:iso/a.aws',
+            tape2 => 'local:iso/a.aws',
+            tape3 => 'none',
+        },
+        'x',
+    ),
+    {
+        tape0 => { file => 'local:iso/a.aws', href => 'a.aws' },
+        tape1 => { file => 'other:iso/a.aws', href => 'x-tape1.aws' },
+        tape2 => { file => 'local:iso/a.aws', href => 'a.aws' },
+    },
+    'tape media to include',
+);
+is_deeply(
+    PVE::QemuServer::OVA::export_media({ tape0 => '/srv/tapes/inst tape.img' }, 'x'),
+    { tape0 => { file => '/srv/tapes/inst tape.img', href => 'x-tape0.aws' } },
+    'a medium with another name or extension',
+);
+
 # names
 is(PVE::QemuServer::OVA::ova_name(300, $mf_conf), 'mf01', 'OVA name from the VM name');
 is(PVE::QemuServer::OVA::ova_name(300, {}), 'vm300', 'OVA name without VM name');
@@ -230,21 +287,28 @@ SKIP: {
     close($fh);
     my $fba = "$dir/vm-900-disk-1.qcow2";
     run_command(['/usr/bin/qemu-img', 'convert', '-f', 'raw', '-O', 'qcow2', $fba_raw, $fba]);
+    my $tape = "$dir/INSTALL.AWS";
+    open($fh, '>', $tape) or die;
+    print $fh pack('vvCC', 4, 0, 0xa0, 0), 'TAPE', pack('vvCC', 0, 4, 0x40, 0) for 1 .. 100;
+    close($fh);
 
     my $conf = {
         name => 'export-test',
-        machine => 'mtm-3907',
+        machine => 'czam',
         ostype => 'other',
         memory => 512,
         ipl => 'ckd0',
         ckd0 => "local:900/vm-900-disk-0.raw,cylinders=$cylinders,devno=0.0.0300",
         fba0 => 'local:900/vm-900-disk-1.qcow2,devno=0.0.0200',
         terminal0 => '0.0.0700',
+        tape0 => 'local:iso/INSTALL.AWS,devno=0.0.0580',
+        tape1 => 'none',
     };
     my $written_conf = {%$conf};
     my $paths = {
         'local:900/vm-900-disk-0.raw' => [$ckd, 'raw', -s $ckd],
         'local:900/vm-900-disk-1.qcow2' => [$fba, 'qcow2', 1024 * 1024],
+        'local:iso/INSTALL.AWS' => [$tape, 'raw', -s $tape],
     };
 
     my $config_module = Test::MockModule->new('PVE::QemuConfig');
@@ -293,8 +357,9 @@ SKIP: {
                 map { "$_\n" } "test-$format.ovf",
                 "test-$format.mf",
                 "test-$format-ckd0.$format",
-                "test-$format-fba0.$format"),
-            "export ($format): archive members in OVF order",
+                "test-$format-fba0.$format",
+                'INSTALL.AWS'),
+            "export ($format): archive members in OVF order, the tape medium last",
         );
         my @left = grep { !m/\.ova$/ } glob("$import_dir/* $import_dir/.*[!.]*");
         is_deeply(\@left, [], "export ($format): no staging files left");
@@ -322,6 +387,7 @@ SKIP: {
             my $same = eval { run_command(['cmp', $orig, $back]); 1 };
             ok($same, "export ($format): $key content byte for byte");
         }
+        ok(eval { run_command(['cmp', $tape, "$x/INSTALL.AWS"]); 1 }, "export ($format): tape medium as is");
         my $head = PVE::QemuServer::DASD::read_image_head("$x/test-$format-ckd0.$format", $format);
         my $header = PVE::QemuServer::DASD::parse_ckd_header($head, -s $ckd);
         is($header->{cylinders}, $cylinders, "export ($format): CKD header cylinders");
@@ -336,6 +402,21 @@ SKIP: {
         );
     }
 
+    # without the media
+    my $volid = PVE::QemuServer::OVA::export_ova(
+        {}, 900, 'local', { filename => 'no-media', 'include-media' => 0 },
+    );
+    my $members = '';
+    run_command(['tar', '-tf', "$import_dir/no-media.ova"], outfunc => sub { $members .= "$_[0]\n" });
+    unlike($members, qr/INSTALL\.AWS/, 'export without media: no medium in the archive');
+    my $ovf = '';
+    run_command(
+        ['tar', '-xOf', "$import_dir/no-media.ova", 'no-media.ovf'],
+        outfunc => sub { $ovf .= "$_[0]\n" },
+    );
+    like($ovf, qr/medium local:iso\/INSTALL\.AWS \(not included\)/, 'export without media: named');
+    unlike($ovf, qr/file-tape0/, 'export without media: no file reference');
+
     $written_conf->{lock} = 'backup';
     eval { PVE::QemuServer::OVA::export_ova({}, 900, 'local', { filename => 'locked' }) };
     like($@, qr/locked/, 'export of a locked VM refused');
@@ -348,6 +429,53 @@ SKIP: {
 
     eval { PVE::QemuServer::OVA::export_ova({}, 900, 'local', { filename => 'test-vmdk' }) };
     like($@, qr/already exists/, 'existing OVA not overwritten');
+}
+
+# import of included tape media: 'tapeN: <storage>:0,import-from=<OVA member>' as
+# PVE::Storage::get_import_metadata() gives it in the create arguments
+{
+    my $guest_import = Test::MockModule->new('PVE::GuestImport');
+    my @extracted;
+    $guest_import->mock(
+        extract_media_from_import_file => sub {
+            my ($source, $storeid) = @_;
+            push @extracted, [$source, $storeid];
+            my ($file) = $source =~ m!/([^/]+)$!;
+            return "$storeid:iso/$file";
+        },
+    );
+    my $param = {
+        tape0 => 'local:0,import-from=local:import/mf01.ova/SYSTEM.AWS,devno=0.0.0580',
+        tape1 => 'local:iso/other.aws',
+        tape2 => 'none',
+    };
+    is_deeply(
+        PVE::QemuServer::Tape::media_imports($param),
+        [['tape0', 'local:import/mf01.ova/SYSTEM.AWS', 'local']],
+        'tape media to import',
+    );
+    PVE::QemuServer::Tape::import_media($param);
+    is($param->{tape0}, 'local:iso/SYSTEM.AWS,devno=0.0.0580', 'imported medium in the drive');
+    is($param->{tape1}, 'local:iso/other.aws', 'other drives unchanged');
+    is_deeply(
+        \@extracted,
+        [['local:import/mf01.ova/SYSTEM.AWS', 'local']],
+        'extracted into the ISO images content of the storage',
+    );
+    eval {
+        PVE::QemuServer::Tape::media_imports(
+            { tape0 => 'local:iso/x.aws,import-from=local:import/x.ova/X.AWS' });
+    };
+    like($@, qr/^tape0: give the storage for the imported medium as '<storage>:0'/,
+        'import needs a target storage');
+    eval {
+        PVE::QemuServer::Tape::get_command_args(
+            {},
+            { tape0 => 'local:0,import-from=local:import/x.ova/X.AWS' },
+            's390x', '/usr/bin/kvm',
+        );
+    };
+    like($@, qr/only for creating or changing/, 'import-from is not started');
 }
 
 done_testing();

@@ -5,6 +5,7 @@
     <File ovf:id="file-ckd0" ovf:href="x-ckd0.vmdk" ovf:size="1000"/>
     <File ovf:id="file-ckd1" ovf:href="x-ckd1.vmdk" ovf:size="1001"/>
     <File ovf:id="file-ckd2" ovf:href="x-ckd2.vmdk" ovf:size="1002"/>
+    <File ovf:id="file-tape0" ovf:href="SYSTEM.AWS" ovf:size="257949696"/>
   </References>
   <DiskSection>
     <Info>Virtual disk information</Info>
@@ -102,8 +103,9 @@
       </Item>
       <Item ovf:required="false">
         <rasd:Address>0.0.0580</rasd:Address>
-        <rasd:Description>IBM 3590 tape drive, medium local:iso/SYSTEM.AWS (not included)</rasd:Description>
+        <rasd:Description>IBM 3590 tape drive, medium SYSTEM.AWS</rasd:Description>
         <rasd:ElementName>tape0</rasd:ElementName>
+        <rasd:HostResource>ovf:/file/file-tape0</rasd:HostResource>
         <rasd:InstanceID>8</rasd:InstanceID>
         <rasd:ResourceSubType>3590</rasd:ResourceSubType>
         <rasd:ResourceType>18</rasd:ResourceType>
@@ -140,16 +142,16 @@
       <Info>Proxmox VE virtual machine configuration</Info>
       <pve:Config pve:key="boot" pve:value="order=ckd0;net0"/>
       <pve:Config pve:key="ipl" pve:value="ckd0"/>
-      <pve:Config pve:key="machine" pve:value="mtm-3907"/>
+      <pve:Config pve:key="machine" pve:value="czam"/>
       <pve:Config pve:key="memory" pve:value="2048"/>
       <pve:Config pve:key="ostype" pve:value="other"/>
       <pve:Config pve:key="tape0" pve:value="local:iso/SYSTEM.AWS"/>
       <pve:Config pve:key="terminal0" pve:value="0.0.0300"/>
       <pve:Config pve:key="terminal1" pve:value="0.0.0301"/>
       <pve:Config pve:key="terminal2" pve:value="0.0.0302"/>
-      <pve:Config pve:key="ckd0" pve:value="cylinders=10017,devno=0.0.0200" pve:diskId="ckd0"/>
-      <pve:Config pve:key="ckd1" pve:value="cylinders=10017,devno=0.0.0201" pve:diskId="ckd1"/>
-      <pve:Config pve:key="ckd2" pve:value="cylinders=10017,devno=0.0.0202" pve:diskId="ckd2"/>
+      <pve:Config pve:key="ckd0" pve:value="cylinders=10017,devno=0.0.0200,model=3390-9,name=SYSRS1" pve:diskId="ckd0"/>
+      <pve:Config pve:key="ckd1" pve:value="cylinders=10017,devno=0.0.0201,name=WORK01" pve:diskId="ckd1"/>
+      <pve:Config pve:key="ckd2" pve:value="cylinders=10017,devno=0.0.0202,name=WORK02" pve:diskId="ckd2"/>
       <pve:Config pve:key="net0" pve:value="qeth=BC:24:11:6C:CE:D6,bridge=vmbr1,devno=0.0.0400"/>
     </pve:ConfigSection>
   </VirtualSystem>

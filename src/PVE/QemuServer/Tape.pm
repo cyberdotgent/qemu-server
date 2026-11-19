@@ -11,6 +11,7 @@ use warnings;
 use JSON;
 
 use PVE::JSONSchema qw(parse_property_string print_property_string);
+use PVE::GuestImport;
 use PVE::Storage;
 
 use PVE::QemuServer::Drive;
@@ -47,6 +48,15 @@ my $tape_fmt = {
         format_description => '0.<ssid>.<devno>',
         description => "The device number of the tape drive as the guest sees it, for example"
             . " '0.0.0580'. Defaults to 0.0.0580 for tape0, 0.0.0581 for tape1 and so on.",
+    },
+    'import-from' => {
+        type => 'string',
+        format => 'pve-volume-id',
+        format_description => 'source volume',
+        optional => 1,
+        description => "Only when creating or changing the drive: import the medium from a tape"
+            . " image (AWSTAPE) in an OVA, '<storage>:import/<name>.ova/<file>.aws', into the ISO"
+            . " images content of the storage given as medium '<storage>:0'.",
     },
     ident => {
         type => 'string',
@@ -119,6 +129,55 @@ sub get_tapes {
     return $res;
 }
 
+my sub import_target_storage {
+    my ($tape) = @_;
+    return $tape->{file} =~ m/^([^:\/]+):0$/ ? $1 : undef;
+}
+
+=head3 media_imports($param)
+
+The tape drives of the parameters C<$param> of a VM creation or change whose medium is imported
+from an OVA (option 'import-from'), as list of C<[$key, $source, $storeid]>. Dies if the target is
+not given as '<storage>:0'.
+
+=cut
+
+sub media_imports {
+    my ($param) = @_;
+
+    my $res = [];
+    for my $key (valid_tape_keys()) {
+        next if !defined($param->{$key});
+        my $tape = parse_tape($param->{$key});
+        next if !defined($tape->{'import-from'});
+        my $storeid = import_target_storage($tape)
+            or die "$key: give the storage for the imported medium as '<storage>:0'\n";
+        push @$res, [$key, $tape->{'import-from'}, $storeid];
+    }
+    return $res;
+}
+
+=head3 import_media($param)
+
+Import the media of the tape drives in the parameters C<$param> that have 'import-from' into the
+ISO images content of their storage, and replace the values with the imported media.
+
+=cut
+
+sub import_media {
+    my ($param) = @_;
+
+    for my $import (media_imports($param)->@*) {
+        my ($key, $source, $storeid) = @$import;
+        my $tape = parse_tape($param->{$key});
+        print "$key: importing medium '$source' to storage '$storeid'\n";
+        $tape->{file} = PVE::GuestImport::extract_media_from_import_file($source, $storeid);
+        delete $tape->{'import-from'};
+        $param->{$key} = print_tape($tape);
+    }
+    return;
+}
+
 # The volumes of the tape media of a config, for activation.
 sub get_volumes {
     my ($conf) = @_;
@@ -156,6 +215,8 @@ sub get_command_args {
     my $args = [];
     for my $entry (@$tapes) {
         my ($key, $tape) = @$entry;
+        die "$key: 'import-from' is only for creating or changing the tape drive\n"
+            if defined($tape->{'import-from'});
         my $device = "3590-ccw,id=$key,devno=" . get_devno($key, $tape);
         if (defined(my $path = tape_path($storecfg, $tape->{file}))) {
             $path =~ s/,/,,/g;
