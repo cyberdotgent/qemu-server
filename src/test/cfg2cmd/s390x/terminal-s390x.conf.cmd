@@ -25,6 +25,5 @@
   -device 'x-terminal3270,chardev=terminal1,devno=fe.0.0301,id=terminal1' \
   -chardev 'socket,id=terminal5,path=/var/run/qemu-server/8006.terminal5,server=on,wait=off,tn3270=on' \
   -device 'x-terminal3270,chardev=terminal5,devno=fe.0.0302,id=terminal5' \
-  -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
   -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
   -machine 'type=s390-ccw-virtio+pve0'

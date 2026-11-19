@@ -22,7 +22,6 @@
   -chardev 'socket,id=serial0,path=/var/run/qemu-server/8006.serial0,server=on,wait=off' \
   -device 'virtio-serial,id=virtioserial0,devno=fe.0.0059' \
   -device 'virtconsole,chardev=serial0,bus=virtioserial0.0' \
-  -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
   -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
   -blockdev '{"detect-zeroes":"on","discard":"ignore","driver":"throttle","file":{"cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"qcow2","file":{"aio":"io_uring","cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"file","filename":"/var/lib/vz/images/8006/vm-8006-disk-0.qcow2","node-name":"edd19f6c1b3a6d5a6248c3376a91a16","read-only":false},"node-name":"fdd19f6c1b3a6d5a6248c3376a91a16","read-only":false},"node-name":"drive-virtio0","read-only":false,"throttle-group":"throttle-drive-virtio0"}' \
   -device 'virtio-blk-ccw,drive=drive-virtio0,id=virtio0,devno=fe.0.000a,write-cache=on' \

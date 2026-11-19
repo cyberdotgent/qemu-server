@@ -2690,10 +2690,15 @@ sub vmstatus {
 
     my $cpucount = $cpuinfo->{cpus} || 1;
 
+    # s390x VMs without a balloon device (mainframe OS types) have no guest memory statistics
+    my $no_guest_mem_stats = {};
+
     foreach my $vmid (keys %$list) {
         next if $opt_vmid && ($vmid ne $opt_vmid);
 
         my $conf = PVE::QemuConfig->load_config($vmid);
+        $no_guest_mem_stats->{$vmid} = 1
+            if PVE::QemuServer::Helpers::get_vm_arch($conf) eq 's390x' && !balloon_enabled($conf);
 
         my $d = { vmid => int($vmid) };
         $d->{pid} = int($list->{$vmid}->{pid}) if $list->{$vmid}->{pid};
@@ -2781,6 +2786,11 @@ sub vmstatus {
         $d->{memhost} = $cgroup_mem->{mem} // 0;
 
         $d->{mem} = $d->{memhost}; # default to cgroup, balloon info can override this below
+        # The cgroup also has QEMU's own memory: an s390x guest without memory statistics (no
+        # balloon device for mainframe operating systems) that uses all its memory would be shown
+        # above 100%. Its usage is at most its memory, 'memhost' keeps the host's view.
+        $d->{mem} = $d->{maxmem}
+            if $no_guest_mem_stats->{$vmid} && $d->{maxmem} && $d->{mem} > $d->{maxmem};
 
         my $pressures = PVE::ProcFSTools::read_cgroup_pressure("qemu.slice/${vmid}.scope");
         $d->{pressurecpusome} = $pressures->{cpu}->{some}->{avg10} * 1;
@@ -3344,6 +3354,21 @@ sub assert_s390x_machine_devices {
 
 # Refuse setting an option an s390x VM cannot have, instead of only failing at start (see
 # config_to_command()). Deleting such an option of an existing config stays possible.
+# Whether the VM gets a balloon device: unless 'balloon' is 0 ($balloon, default the config's).
+# Without 'balloon', s390x VMs with a mainframe OS type ("other") get none: the VirtIO devices are
+# for Linux guests only, other operating systems have no driver for them. An explicit
+# 'balloon' still adds it.
+sub balloon_enabled {
+    my ($conf, $balloon) = @_;
+
+    $balloon //= $conf->{balloon};
+    return $balloon ? 1 : 0 if defined($balloon);
+    return 0
+        if PVE::QemuServer::Helpers::get_vm_arch($conf) eq 's390x'
+        && !PVE::QemuServer::Helpers::is_linux_ostype($conf->{ostype});
+    return 1;
+}
+
 sub assert_s390x_option_supported {
     my ($arch, $opt, $value) = @_;
 
@@ -3957,8 +3982,8 @@ sub config_to_command {
         }
     }
 
-    # enable balloon by default, unless explicitly disabled
-    if (!defined($conf->{balloon}) || $conf->{balloon}) {
+    # enable balloon by default, unless explicitly disabled (or a mainframe OS on s390x)
+    if (balloon_enabled($conf)) {
         my $pciaddr = print_pci_addr("balloon0", $arch);
         my $model = $arch eq 's390x' ? 'virtio-balloon-ccw' : 'virtio-balloon-pci';
         my $ballooncmd = "$model,id=balloon0$pciaddr";
@@ -5148,9 +5173,8 @@ sub vmconfig_hotplug_pending {
                 qemu_cpu_hotplug($vmid, $conf, $value);
             } elsif ($opt eq 'balloon') {
                 # enable/disable ballooning device is not hotpluggable
-                my $old_balloon_enabled = !!(!defined($conf->{balloon}) || $conf->{balloon});
-                my $new_balloon_enabled =
-                    !!(!defined($conf->{pending}->{balloon}) || $conf->{pending}->{balloon});
+                my $old_balloon_enabled = balloon_enabled($conf);
+                my $new_balloon_enabled = balloon_enabled($conf, $conf->{pending}->{balloon});
                 die "skip\n" if $old_balloon_enabled != $new_balloon_enabled;
 
                 # allow manual ballooning if shares is set to zero
@@ -6498,7 +6522,7 @@ sub vm_start_nolock {
         PVE::QemuServer::Network::add_nets_bridge_fdb($conf, $vmid);
     }
 
-    if (!defined($conf->{balloon}) || $conf->{balloon}) {
+    if (balloon_enabled($conf)) {
         eval {
             mon_cmd(
                 $vmid,

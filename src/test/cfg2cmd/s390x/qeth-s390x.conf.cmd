@@ -19,7 +19,6 @@
   -device 'sclplmconsole,chardev=sclplm,hardcopy=sclplm-hardcopy' \
   -chardev 'socket,id=sclp3270,path=/var/run/qemu-server/8006.3270,server=on,wait=off,tn3270=on' \
   -device 'sclp3270console,chardev=sclp3270' \
-  -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
   -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
   -netdev 'type=tap,id=net0,ifname=tap8006i0,script=/usr/libexec/qemu-server/pve-bridge,downscript=/usr/libexec/qemu-server/pve-bridgedown' \
   -device 'qeth-ccw,mac=BC:24:11:00:00:01,netdev=net0,devno=fe.0.0400,id=net0' \

@@ -928,4 +928,17 @@ subtest 'default import working storage' => sub {
     %$ids = %$saved;
 };
 
+# no balloon device for mainframe OS types on s390x unless set (VirtIO is for Linux guests)
+subtest 'balloon device' => sub {
+    my $enabled = sub { PVE::QemuServer::balloon_enabled(@_) };
+    ok($enabled->({ arch => 'x86_64' }), 'x86_64: by default');
+    ok(!$enabled->({ arch => 'x86_64', balloon => 0 }), 'x86_64: balloon 0');
+    ok($enabled->({ arch => 's390x', ostype => 'l26' }), 's390x Linux: by default');
+    ok(!$enabled->({ arch => 's390x', ostype => 'other' }), 's390x other: none by default');
+    ok(!$enabled->({ arch => 's390x' }), 's390x without OS type: none by default');
+    ok($enabled->({ arch => 's390x', ostype => 'other', balloon => 512 }), 's390x other: explicit');
+    ok(!$enabled->({ arch => 's390x', ostype => 'l26', balloon => 0 }), 's390x Linux: balloon 0');
+    ok($enabled->({ arch => 's390x', ostype => 'other' }, 1024), 'pending value');
+};
+
 done_testing();

@@ -23,7 +23,6 @@
   -device 'sclplmconsole,chardev=sclplm,hardcopy=sclplm-hardcopy' \
   -chardev 'socket,id=sclp3270,path=/var/run/qemu-server/8006.3270,server=on,wait=off,tn3270=on' \
   -device 'sclp3270console,chardev=sclp3270' \
-  -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
   -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
   -device 'virtio-scsi-ccw,id=scsihw0,devno=fe.0.0005' \
   -blockdev '{"detect-zeroes":"on","discard":"ignore","driver":"throttle","file":{"cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"qcow2","file":{"aio":"io_uring","cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"file","filename":"/var/lib/vz/images/8006/vm-8006-disk-1.qcow2","node-name":"e866ab9fb5934fd821b24dd359a073a","read-only":false},"node-name":"f866ab9fb5934fd821b24dd359a073a","read-only":false},"node-name":"drive-scsi0","read-only":false,"throttle-group":"throttle-drive-scsi0"}' \

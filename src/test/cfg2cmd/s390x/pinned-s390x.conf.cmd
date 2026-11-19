@@ -23,7 +23,6 @@
   -chardev 'socket,id=serial0,path=/var/run/qemu-server/8006.serial0,server=on,wait=off' \
   -device 'virtio-serial,id=virtioserial0,devno=fe.0.0059' \
   -device 'virtconsole,chardev=serial0,bus=virtioserial0.0' \
-  -device 'virtio-balloon-ccw,id=balloon0,devno=fe.0.0003,free-page-reporting=on' \
   -iscsi 'initiator-name=iqn.1993-08.org.debian:01:aabbccddeeff' \
   -device 'virtio-scsi-ccw,id=virtioscsi0,devno=fe.0.0061' \
   -blockdev '{"detect-zeroes":"on","discard":"ignore","driver":"throttle","file":{"cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"qcow2","file":{"aio":"io_uring","cache":{"direct":true,"no-flush":false},"detect-zeroes":"on","discard":"ignore","driver":"file","filename":"/var/lib/vz/images/8006/vm-8006-disk-0.qcow2","node-name":"ecd04be4259153b8293415fefa2a84c","read-only":false},"node-name":"fcd04be4259153b8293415fefa2a84c","read-only":false},"node-name":"drive-scsi0","read-only":false,"throttle-group":"throttle-drive-scsi0"}' \
