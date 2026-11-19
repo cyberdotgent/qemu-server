@@ -201,7 +201,9 @@ sub print_drivedevice_full {
         die "unsupported interface type";
     }
 
-    $device .= ",bootindex=$drive->{bootindex}" if $drive->{bootindex};
+    # DASDs (fba-ccw, eckd-ccw) have no bootindex property, they IPL by channel program
+    $device .= ",bootindex=$drive->{bootindex}"
+        if $drive->{bootindex} && !PVE::QemuServer::Drive::drive_is_dasd($drive);
     # s390x load parameter of the IPL device, needs the bootindex before it
     $device .= ",loadparm=$drive->{loadparm}" if defined($drive->{loadparm});
 

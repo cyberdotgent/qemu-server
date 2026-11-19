@@ -3603,6 +3603,11 @@ sub config_to_command {
             push $machineFlags->@*, "loadparm=$loadparm" if defined($loadparm);
         }
     }
+    # DASDs and tape drives never get a bootindex, whatever the IPL (also with netboot, which
+    # keeps the boot order): their QEMU devices have no such property
+    if ($arch eq 's390x') {
+        delete $bootorder->@{ grep { m/^(?:fba|ckd|tape)\d+$/ } keys %$bootorder };
+    }
 
     # host pci device passthrough
     my ($kvm_off, $gpu_passthrough, $legacy_igd, $pci_devices) =
