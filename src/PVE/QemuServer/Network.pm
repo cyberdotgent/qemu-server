@@ -289,8 +289,10 @@ sub assign_qeth_devno {
     my $net = parse_property_string($net_fmt, $value);
     return $value if $net->{model} ne 'qeth' || defined($net->{devno});
 
-    for my $old (($conf->{pending} // {})->{$key}, $conf->{$key}) {
-        next if !defined($old);
+    # copies: a foreach loop over the hash elements would create them (as undef) in the config
+    my @old_values = grep { defined } map { exists($_->{$key}) ? $_->{$key} : undef }
+        ($conf->{pending} // {}), $conf;
+    for my $old (@old_values) {
         my $old_net = eval { parse_property_string($net_fmt, $old) } or next;
         next if $old_net->{model} ne 'qeth' || !defined($old_net->{devno});
         $net->{devno} = $old_net->{devno};

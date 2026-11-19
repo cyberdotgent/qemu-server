@@ -354,6 +354,13 @@ subtest 's390x: qeth adapters without a device number get one' => sub {
         },
         write_config => sub {
             my ($class, $vmid, $conf) = @_;
+            # what writing the config file checks: every value is defined
+            for my $section ($conf, $conf->{pending} // {}) {
+                for my $key (keys %$section) {
+                    die "unable to parse value of '$key' - got undefined value\n"
+                        if !defined($section->{$key});
+                }
+            }
             $stored = dclone($conf);
         },
     );
@@ -380,6 +387,7 @@ subtest 's390x: qeth adapters without a device number get one' => sub {
         'qeth=BC:24:11:00:00:02,bridge=vmbr0,devno=0.0.0408',
         'new qeth adapter gets the next free device number',
     );
+    ok(!exists($stored->{net1}), 'no empty current value of the new qeth adapter');
 
     PVE::API2::Qemu->update_vm({
         node => 'localhost',
