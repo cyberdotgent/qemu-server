@@ -804,11 +804,12 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                     my $source_header;
                     if ($dasd) {
                         die "$ds: live import is not supported for DASDs\n" if $live_import;
+                        # both return more in list context
                         $source_header = $check_dasd_import_source->(
                             $ds,
-                            PVE::Storage::path($storecfg, $source),
+                            scalar(PVE::Storage::path($storecfg, $source)),
                             $source_format,
-                            PVE::Storage::volume_size_info($storecfg, $source),
+                            scalar(PVE::Storage::volume_size_info($storecfg, $source)),
                         );
                     }
 

@@ -487,4 +487,77 @@ subtest 's390x: adding DASDs to an existing VM' => sub {
     mock_unreachable_config();
 };
 
+subtest 's390x: importing a DASD from a storage volume' => sub {
+    my $stored = {
+        arch => 's390x',
+        ostype => 'other',
+        pending => {},
+        snapshots => {},
+    };
+
+    $qemu_config_module->mock(
+        load_config => sub { return dclone($stored); },
+        lock_config => sub {
+            my ($class, $vmid, $code, @param) = @_;
+            return $code->(@param);
+        },
+        write_config => sub { },
+    );
+    my $qemu_server_module = Test::MockModule->new('PVE::QemuServer');
+    $qemu_server_module->mock(check_running => sub { return 1; });
+    my $storage = Test::MockModule->new('PVE::Storage');
+    $storage->mock(
+        config => sub { return {}; },
+        storage_config => sub {
+            return {
+                type => 'dir',
+                path => '/var/lib/vz',
+                content => { images => 1, import => 1 },
+            };
+        },
+        storage_check_enabled => sub { return; },
+        check_volume_access => sub { return; },
+        parse_volname => sub {
+            my ($cfg, $volid) = @_;
+            return ('import', 'x.ckd', undef, undef, undef, undef, 'raw')
+                if $volid eq 'local:import/x.ckd';
+            die "unexpected volume '$volid'\n";
+        },
+        # both return more in list context, like the real ones
+        path => sub {
+            my $path = '/var/lib/vz/import/x.ckd';
+            return wantarray ? ($path, undef, 'import') : $path;
+        },
+        volume_size_info => sub {
+            return wantarray ? (2846431744, 'raw', 2846431744, undef) : 2846431744;
+        },
+    );
+    my $rpcenv_module = Test::MockModule->new('PVE::RPCEnvironment');
+    $rpcenv_module->mock(check => sub { return 1; });
+    my $dasd = Test::MockModule->new('PVE::QemuServer::DASD');
+    my $args;
+    $dasd->mock(
+        check_ckd_import_source => sub {
+            $args = [@_];
+            die "checked\n";
+        },
+    );
+
+    eval {
+        PVE::API2::Qemu->update_vm({
+            node => 'localhost',
+            vmid => 100,
+            ckd0 => 'local:0,import-from=local:import/x.ckd',
+        });
+    };
+    like($@, qr/checked/, 'reached the check of the source image');
+    is_deeply(
+        $args,
+        ['/var/lib/vz/import/x.ckd', 'raw', 2846431744],
+        'path, format and size of the source image',
+    );
+
+    mock_unreachable_config();
+};
+
 done_testing();
