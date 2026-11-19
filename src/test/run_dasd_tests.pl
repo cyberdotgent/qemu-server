@@ -186,7 +186,7 @@ ok(
     !PVE::QemuServer::Drive::parse_drive('fba0', 'local:100/vm-100-disk-0.raw,devno=fe.0.0200'),
     'guest device numbers only',
 );
-ok(!PVE::QemuServer::Drive::parse_drive('ckd0', 'local:0,model=3390-9'), 'model only on alloc');
+ok(PVE::QemuServer::Drive::parse_drive('ckd0', 'local:0,model=3390-9'), 'model is stored in the config');
 is(
     PVE::QemuServer::Drive::parse_drive('ckd0', 'local:0,model=3390-9,name=SYSRS1', 1)->{model},
     '3390-9',
@@ -279,7 +279,7 @@ SKIP: {
         );
     }
 
-    # a volume through the storage layer: create, attach a Hercules image, resize
+    # a volume through the storage layer: create, attach a Hercules image
     my $vol = "$dir/vm-100-SYSRS1.raw";
     $storage->mock(
         activate_volumes => sub { },
@@ -287,10 +287,6 @@ SKIP: {
         parse_volname =>
             sub { return ('images', 'vm-100-SYSRS1.raw', 100, undef, undef, undef, 'raw'); },
         volume_size_info => sub { return -s $vol; },
-        volume_resize => sub {
-            my ($cfg, $volid, $size) = @_;
-            truncate($vol, $size + (1024 - $size % 1024) % 1024) or die "truncate: $!\n";
-        },
     );
     open(my $fh, '>', $vol) or die;
     close($fh);
@@ -309,17 +305,6 @@ SKIP: {
         'CKD_P370' . substr($header, 8, 10) . pack('v', 1113) . '876955967561',
         'identifier and serial kept',
     );
-
-    # grow by 1 GiB: 1259 cylinders
-    my ($size, $cylinders) =
-        PVE::QemuServer::DASD::resize_ckd_volume({}, 'x', undef, 1024 * 1024 * 1024);
-    is($cylinders, 1113 + 1259, 'grown by whole cylinders');
-    is($size, -s $vol, 'new size');
-    ok($size >= PVE::QemuServer::DASD::ckd_volume_size(2372), 'large enough');
-    eval { PVE::QemuServer::DASD::resize_ckd_volume({}, 'x', undef, 852479) };
-    like($@, qr/grows by whole cylinders/, 'less than a cylinder');
-    ($size, $cylinders) = PVE::QemuServer::DASD::resize_ckd_volume({}, 'x', 10**12, undef);
-    is($cylinders, 65520, 'at most 65520 cylinders');
 
     # import of a Hercules image (exact length, high cylinder 0) into storage that rounds the
     # size up: 4 MiB LVM extents, 16 KiB ZFS volblocksize
@@ -382,6 +367,129 @@ SKIP: {
     like($@, qr/too short for 1113 cylinders/, 'migration: new volume too small');
     eval { PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $hercules) };
     like($@, qr/no cylinder count/, 'migration: header without cylinder count refused');
+}
+
+# the model of a DASD in the config
+for my $test (
+    ['ckd0', { interface => 'ckd', cylinders => 10017 }, '3390-9'],
+    ['ckd0', { interface => 'ckd', cylinders => 3339 }, '3390-3'],
+    ['ckd0', { interface => 'ckd', cylinders => 5000 }, '3390'],
+    ['ckd0', { interface => 'ckd', cylinders => 10017, model => '3390' }, '3390'],
+    ['ckd0', { interface => 'ckd', cylinders => 10017, model => '3390-3' }, qr/a 3390-3 has 3339/],
+    ['ckd0', { interface => 'ckd' }, undef],
+    ['fba0', { interface => 'fba' }, '9336'],
+) {
+    my ($key, $drive, $expected) = $test->@*;
+    my $name = join(',', map { "$_=$drive->{$_}" } sort keys %$drive);
+    eval { PVE::QemuServer::DASD::set_drive_model($key, $drive) };
+    if (ref($expected)) {
+        like($@, $expected, "model of $name refused");
+    } else {
+        is($@, '', "model of $name");
+        is($drive->{model}, $expected, "model of $name");
+    }
+}
+is(
+    PVE::QemuServer::DASD::ckd_cylinders_of_drive({ model => '3390', cylinders => 5000 }),
+    5000,
+    'generic 3390 model with cylinders',
+);
+eval { PVE::QemuServer::DASD::ckd_cylinders_of_drive({ model => '3390' }) };
+like($@, qr/need 'model' or 'cylinders'/, 'generic 3390 model needs cylinders');
+{
+    my $drive = PVE::QemuServer::Drive::parse_drive(
+        'ckd0', 'local-lvm:vm-300-SYSRS1,cylinders=10017,devno=0.0.0300,model=3390-9,size=8G',
+    );
+    is($drive->{model}, '3390-9', 'model parsed from the config');
+    is(
+        PVE::QemuServer::Drive::print_drive($drive),
+        'local-lvm:vm-300-SYSRS1,cylinders=10017,devno=0.0.0300,model=3390-9,size=8G',
+        'model printed into the config',
+    );
+    ok(
+        !PVE::QemuServer::Drive::parse_drive('fba0', 'local:1,model=3390-9'),
+        'an FBA DASD is no 3390',
+    );
+    my $ide = PVE::QemuServer::Drive::parse_drive('ide0', 'local:1,model=My%20Disk');
+    is(PVE::QemuServer::Drive::print_drive($ide), 'local:1,model=My%20Disk', 'IDE model kept');
+}
+
+# identity override: needs the QEMU properties
+{
+    my $helpers = Test::MockModule->new('PVE::QemuServer::Helpers');
+    my $props = {};
+    $helpers->mock(
+        get_command_for_arch => sub { '/usr/bin/kvm' },
+        kvm_device_has_property => sub { $props->{"$_[1].$_[2]"} ? 1 : 0 },
+    );
+    my $drive = { interface => 'ckd', devtype => '3380-0e', cutype => '3990' };
+    eval { PVE::QemuServer::DASD::identity_properties('ckd0', $drive, 's390x') };
+    like($@, qr/^ckd0: 'cutype' needs a QEMU with the 'control-unit-type' property/, 'no QEMU support');
+    $props = { map { $_ => 1 } qw(eckd-ccw.device-type eckd-ccw.control-unit-type) };
+    is(
+        PVE::QemuServer::DASD::identity_properties('ckd0', $drive, 's390x'),
+        ',control-unit-type=' . 0x3990 . ',device-type=' . 0x3380 . ',device-model=14',
+        'identity properties',
+    );
+    is(PVE::QemuServer::DASD::identity_properties('ckd0', { interface => 'ckd' }, 's390x'), '',
+        'no identity override');
+}
+
+# names of DASD volumes kept on import, restore and migration
+for my $test (
+    ['local-lvm:vm-300-SYSRS1', 'SYSRS1'],
+    ['local:300/vm-300-WORK01.qcow2', 'WORK01'],
+    ['local-zfs:vm-300-disk-0', undef],
+    ['local:300/vm-300-cloudinit.qcow2', undef],
+    ['local:import/x.raw', undef],
+    ['rbd:vm-1234-WORK_02', 'WORK_02'],
+) {
+    my ($volid, $expected) = @$test;
+    is(PVE::QemuServer::DASD::volume_name_of_volid($volid), $expected, "volume name of $volid");
+}
+for my $test (
+    ['local:import/SYSRS1.ckd', 'SYSRS1'],
+    ['local:import/sysrs1.FBA', 'sysrs1'],
+    ['/mnt/hercules/dasd/SYSRES.ckd64', 'SYSRES'],
+    ['local:import/mf01.ova/mf01-ckd0.vmdk', undef],
+    ['local:import/disk.qcow2', undef],
+    ['local-lvm:vm-300-SYSRS1', 'SYSRS1'],
+    ['local:import/bad name.ckd', undef],
+) {
+    my ($source, $expected) = @$test;
+    is(
+        PVE::QemuServer::DASD::import_source_volume_name($source),
+        $expected,
+        "import volume name of $source",
+    );
+}
+{
+    my $storage = Test::MockModule->new('PVE::Storage');
+    my $taken = { 'vm-301-SYSRS1' => 1 };
+    my @calls;
+    $storage->mock(
+        storage_config => sub { return { type => 'lvmthin' } },
+        vdisk_alloc => sub {
+            my ($cfg, $storeid, $vmid, $fmt, $name, $size) = @_;
+            push @calls, $name // 'undef';
+            die "volume '$name' already exists\n" if defined($name) && $taken->{$name};
+            return "$storeid:" . ($name // "vm-$vmid-disk-0");
+        },
+    );
+    is(
+        PVE::QemuServer::DASD::alloc_named_volume({}, 'local-lvm', 301, 'raw', 'WORK01', 1, 'ckd1'),
+        'local-lvm:vm-301-WORK01',
+        'free name kept',
+    );
+    my $warning = '';
+    local $SIG{__WARN__} = sub { $warning .= $_[0] };
+    is(
+        PVE::QemuServer::DASD::alloc_named_volume({}, 'local-lvm', 301, 'raw', 'SYSRS1', 1, 'ckd0'),
+        'local-lvm:vm-301-disk-0',
+        'taken name: default name',
+    );
+    like($warning, qr/ckd0: unable to allocate the volume 'vm-301-SYSRS1'.*default volume name/,
+        'taken name: warning');
 }
 
 done_testing();

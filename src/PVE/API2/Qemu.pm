@@ -766,6 +766,12 @@ my sub create_disks : prototype($$$$$$$$$$$) {
             if (my $source = delete $disk->{'import-from'}) {
                 my $dst_volid;
 
+                # an imported DASD keeps the name of its source volume (like the VOLSER), if free
+                my $volume_name =
+                    $dasd
+                    ? $disk->{name} // PVE::QemuServer::DASD::import_source_volume_name($source)
+                    : undef;
+
                 # Hercules DASD images (.ckd, .ckd64, .fba): only as the DASD type they are
                 if (my ($ext) = $source =~ m/\.(ckd(?:64)?|fba)$/i) {
                     my $type = lc($ext) eq 'fba' ? 'fba' : 'ckd';
@@ -839,6 +845,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                             drivename => $ds,
                             storage => $storeid,
                             format => $disk->{format},
+                            'volume-name' => $volume_name,
                         };
 
                         $dest_info->{efisize} = PVE::QemuServer::get_efivars_size($conf, $disk)
@@ -889,6 +896,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                                 drive_name => $ds,
                                 format => $disk->{format},
                                 'skip-config-update' => 1,
+                                'volume-name' => $volume_name,
                             },
                         );
 
@@ -911,7 +919,8 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                     $disk->{file} = $dst_volid;
                     $disk->{size} = $size;
                     delete $disk->{format}; # no longer needed
-                    delete $disk->@{qw(name model)};
+                    delete $disk->{name};
+                    PVE::QemuServer::DASD::set_drive_model($ds, $disk) if $dasd;
                     $res->{$ds} = PVE::QemuServer::print_drive($disk);
                 }
             }
@@ -972,7 +981,8 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                 $disk->{file} = $volid;
                 $disk->{size} = PVE::Tools::convert_size($size, 'kb' => 'b');
                 delete $disk->{format}; # no longer needed
-                delete $disk->@{qw(name model)};
+                delete $disk->{name};
+                PVE::QemuServer::DASD::set_drive_model($ds, $disk) if $dasd;
                 $res->{$ds} = PVE::QemuServer::print_drive($disk);
             }
 
@@ -1011,7 +1021,8 @@ my sub create_disks : prototype($$$$$$$$$$$) {
             $disk->{size} = $size;
 
             $check_dasd_volume->($ds, $disk, $size) if $dasd;
-            delete $disk->@{qw(name model)};
+            delete $disk->{name};
+            PVE::QemuServer::DASD::set_drive_model($ds, $disk) if $dasd;
 
             $res->{$ds} = PVE::QemuServer::print_drive($disk);
         }
@@ -1768,6 +1779,13 @@ __PACKAGE__->register_method({
 
             PVE::QemuServer::Network::add_random_macs($param);
             normalize_ccw_devnos($param);
+
+            # the given device numbers, the missing ones are assigned from the free ones
+            PVE::QemuServer::CCW::assert_devno_config({}, 0, $param) if $arch eq 's390x';
+        }
+        if (exists($param->{arch})) {
+            eval { PVE::QemuServer::check_vm_arch_supported($param->{arch}) };
+            raise_param_exc({ arch => "$@" }) if $@;
         }
 
         my $emsg = $is_restore ? "unable to restore VM $vmid -" : "unable to create VM $vmid -";
@@ -1962,7 +1980,7 @@ __PACKAGE__->register_method({
                                 $conf, $key, $conf->{$key},
                             );
                         }
-                        PVE::QemuServer::CCW::check_devno_conflicts($conf);
+                        PVE::QemuServer::CCW::assert_devno_config($conf);
                     }
 
                     if (!$conf->{boot}) {
@@ -2951,6 +2969,11 @@ my $update_vm_api = sub {
 
     normalize_ccw_devnos($param);
 
+    if (exists($param->{arch})) {
+        eval { PVE::QemuServer::check_vm_arch_supported($param->{arch}) };
+        raise_param_exc({ arch => "$@" }) if $@;
+    }
+
     foreach my $opt (keys %$param) {
         if ($opt =~ m/^net(\d+)$/) {
             # add macaddr
@@ -2990,6 +3013,14 @@ my $update_vm_api = sub {
         # before anything is written (the values to revert to were accepted before)
         my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
         PVE::QemuServer::assert_s390x_option_supported($arch, $_) for sort keys %$param;
+
+        # the CCW device numbers of the config with the changes must not overlap. Also refuses an
+        # unrelated change of a config that has overlapping device numbers already.
+        if ($arch eq 's390x') {
+            my $override = { $param->%* };
+            $override->{$_} = undef for @delete;
+            PVE::QemuServer::CCW::assert_devno_config($conf, 0, $override, [keys %$override]);
+        }
 
         # FIXME: 'suspended' lock should probably be a state or "weak" lock?!
         if (scalar(@delete) && grep { $_ eq 'vmstate' } @delete) {
@@ -3377,10 +3408,16 @@ my $update_vm_api = sub {
             }
             # the CCW devices with a device number (a 3270 terminal has it as default key)
             if ($arch eq 's390x' && $opt =~ m/^(?:net|fba|ckd|tape|terminal)\d+$/) {
-                PVE::QemuServer::CCW::check_devno_conflicts(
+                # with the other changes of this update: they may swap device numbers
+                PVE::QemuServer::CCW::assert_devno_config(
                     $conf,
                     0,
-                    { $opt => $conf->{pending}->{$opt} },
+                    {
+                        $param->%*,
+                        (map { $_ => undef } @delete),
+                        $opt => $conf->{pending}->{$opt},
+                    },
+                    [$opt],
                 );
             }
             PVE::QemuConfig->remove_from_pending_delete($conf, $opt);
@@ -6841,6 +6878,10 @@ __PACKAGE__->register_method({
     },
 });
 
+my $no_ckd_resize_msg = "CKD DASDs cannot be resized: a CKD volume has the fixed geometry of its"
+    . " 3390 model and the guest cannot extend its VTOC to more cylinders. Create a new, larger"
+    . " volume and copy the data in the guest instead (FBA DASDs can be resized).\n";
+
 __PACKAGE__->register_method({
     name => 'resize_vm',
     path => '{vmid}/resize',
@@ -6903,6 +6944,10 @@ __PACKAGE__->register_method({
         raise_param_exc({ skiplock => "Only root may use this option." })
             if $skiplock && $authuser ne 'root@pam';
 
+        # A CKD volume has the geometry of a 3390 model, its VTOC describes it: the guest could
+        # not use more cylinders, a new size would break the volume rather than extend it.
+        raise_param_exc({ disk => $no_ckd_resize_msg }) if $disk =~ m/^ckd\d+$/;
+
         my $storecfg = PVE::Storage::config();
 
         my $updatefn = sub {
@@ -6914,6 +6959,7 @@ __PACKAGE__->register_method({
             PVE::QemuConfig->check_lock($conf) if !$skiplock;
 
             die "disk '$disk' does not exist\n" if !$conf->{$disk};
+            die $no_ckd_resize_msg if $disk =~ m/^ckd\d+$/;
 
             my $drive = PVE::QemuServer::parse_drive($disk, $conf->{$disk});
 
@@ -6948,7 +6994,6 @@ __PACKAGE__->register_method({
                     $newsize = $newsize * 1024 * 1024 * 1024 * 1024;
                 }
             }
-            my $increment = $ext ? int($newsize) : undef;
             $newsize += $size if $ext;
             $newsize = int($newsize);
 
@@ -6962,24 +7007,8 @@ __PACKAGE__->register_method({
                 "update VM $vmid: resize --disk $disk --size $sizestr",
             );
 
-            if ($drive->{interface} eq 'ckd') {
-                # the header holds the size, rewriting it needs exclusive access to the volume
-                die "a CKD volume can only be resized while the VM is not running\n"
-                    if PVE::QemuServer::Helpers::vm_running_locally($vmid);
-                ($newsize, my $cylinders) = PVE::QemuServer::DASD::resize_ckd_volume(
-                    $storecfg,
-                    $volid,
-                    $newsize,
-                    $increment,
-                );
-                print "$disk: resized to $cylinders cylinders\n";
-                $drive->{cylinders} = $cylinders;
-            } else {
-                PVE::QemuServer::DASD::check_fba_size($newsize) if $drive->{interface} eq 'fba';
-                PVE::QemuServer::Blockdev::resize(
-                    $vmid, "drive-$disk", $storecfg, $volid, $newsize,
-                );
-            }
+            PVE::QemuServer::DASD::check_fba_size($newsize) if $drive->{interface} eq 'fba';
+            PVE::QemuServer::Blockdev::resize($vmid, "drive-$disk", $storecfg, $volid, $newsize);
 
             $drive->{size} = $newsize;
             $conf->{$disk} = PVE::QemuServer::print_drive($drive);

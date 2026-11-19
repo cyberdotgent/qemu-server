@@ -6,6 +6,7 @@ use warnings;
 use URI::Escape;
 
 use PVE::QemuServer::CCW;
+use PVE::QemuServer::DASD;
 use PVE::QemuServer::Drive qw (drive_is_cdrom);
 use PVE::QemuServer::Helpers qw(kvm_user_version min_version);
 use PVE::QemuServer::Machine;
@@ -193,6 +194,7 @@ sub print_drivedevice_full {
         $device = $drive->{interface} eq 'fba' ? 'fba-ccw' : 'eckd-ccw';
         $device .= ",drive=drive-$drive_id,id=$drive_id";
         $device .= ",devno=" . PVE::QemuServer::CCW::qemu_devno($drive->{devno});
+        $device .= PVE::QemuServer::DASD::identity_properties($drive_id, $drive, $arch);
         $has_write_cache = 0; # the device flushes at the end of each writing channel program
     } elsif ($drive->{interface} eq 'usb') {
         die "implement me";

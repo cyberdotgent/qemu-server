@@ -222,6 +222,29 @@ sub kvm_device_ipl_methods {
     return { map { $_ => $methods->{$_} } @$types };
 }
 
+my $kvm_device_properties = {};
+my $kvm_device_properties_mtime = {};
+
+# Whether the QEMU device type $type of the QEMU binary has the property $property. For properties
+# of QEMU builds with mainframe support that may not be there yet.
+sub kvm_device_has_property {
+    my ($binary, $type, $property) = @_;
+
+    my $st = stat($binary) or die "unable to stat QEMU binary '$binary' - $!\n";
+    if (($kvm_device_properties_mtime->{$binary} // -1) != $st->mtime) {
+        $kvm_device_properties->{$binary} = {};
+        $kvm_device_properties_mtime->{$binary} = $st->mtime;
+    }
+    my $cache = $kvm_device_properties->{$binary};
+    if (!exists($cache->{$type})) {
+        my $res = eval { query_device_type_properties($binary, [$type]) } // {};
+        warn "unable to query the properties of the QEMU device type '$type' - $@" if $@;
+        $cache->{$type} = $res->{$type} // {};
+    }
+
+    return exists($cache->{$type}->{$property}) ? 1 : 0;
+}
+
 # Paths and directories
 
 # FIXME: MAJOR VERSION: use /run/qemu-server everywhere instead of mixing /run and /var/run and rely

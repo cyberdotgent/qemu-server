@@ -994,6 +994,10 @@ __PACKAGE__->register_method({
                         drive_name => $drive,
                         format => $format,
                         skiplock => 1,
+                        # a DASD keeps the name of its volume, if it is free
+                        'volume-name' => $drive =~ m/^(?:fba|ckd)\d+$/
+                        ? ($disk->{options} // {})->{name}
+                        : undef,
                     },
                 );
                 # for cleanup on (later) error

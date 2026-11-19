@@ -478,7 +478,7 @@ subtest 's390x: adding DASDs to an existing VM' => sub {
     PVE::API2::Qemu->update_vm({ node => 'localhost', vmid => 100, fba7 => 'local:1' });
     like(
         $stored->{pending}->{fba7} // '',
-        qr/^local:100\/vm-100-disk-1\.raw,devno=0\.0\.0201,size=1G$/,
+        qr/^local:100\/vm-100-disk-1\.raw,devno=0\.0\.0201,model=9336,size=1G$/,
         'new FBA DASD created with the next free device number',
     );
     ok(!exists($stored->{fba7}), 'no empty current value left in the config');
@@ -622,6 +622,230 @@ subtest 's390x: importing a DASD from a storage volume' => sub {
     );
 
     mock_unreachable_config();
+};
+
+subtest 's390x: overlapping CCW device numbers are refused on every change' => sub {
+    my $stored;
+    my $written = 0;
+
+    $qemu_config_module->mock(
+        load_config => sub { return dclone($stored); },
+        lock_config => sub {
+            my ($class, $vmid, $code, @param) = @_;
+            return $code->(@param);
+        },
+        write_config => sub {
+            my ($class, $vmid, $conf) = @_;
+            $written++;
+            $stored = dclone($conf);
+        },
+    );
+    my $qemu_server_module = Test::MockModule->new('PVE::QemuServer');
+    $qemu_server_module->mock(check_running => sub { return 1; }); # changes stay pending
+    $qemu_server_module->mock(vmconfig_hotplug_pending => sub { return; });
+    my $storage = Test::MockModule->new('PVE::Storage');
+    $storage->mock(
+        config => sub { return {}; },
+        check_volume_access => sub { return; },
+        storage_config => sub {
+            return { type => 'dir', path => '/var/lib/vz', content => { images => 1 } };
+        },
+        parse_volname => sub {
+            my ($cfg, $volid) = @_;
+            my ($name) = $volid =~ m!/([^/]+)$!;
+            return ('images', $name, 100, undef, undef, undef, 'raw');
+        },
+    );
+    $rpcenv->set_user('root@pam');
+
+    my $base = {
+        arch => 's390x',
+        ostype => 'other',
+        ckd0 => 'local:100/vm-100-SYSRS1.raw,devno=0.0.0300,size=8G',
+        fba1 => 'local:100/vm-100-cloudinit.qcow2,media=cdrom,devno=0.0.0200',
+        net0 => 'qeth=BC:24:11:00:00:01,bridge=vmbr0,devno=0.0.0400',
+        terminal0 => '0.0.0700',
+        tape0 => 'none',
+        pending => {},
+        snapshots => {},
+    };
+
+    for my $test (
+        [
+            { ckd1 => 'local:100/vm-100-X.raw,devno=0300' },
+            ckd1 => qr/^ckd1: device number 0\.0\.0300 is already used by ckd0/,
+        ],
+        [
+            { terminal1 => '0.0.0402' },
+            terminal1 => qr/^terminal1: device number 0\.0\.0402 is already used by net0 \(terminal1: 0\.0\.0402, net0: 0\.0\.0400-0\.0\.0402\)/,
+        ],
+        [
+            { net1 => 'qeth=BC:24:11:00:00:02,bridge=vmbr0,devno=0.0.0700' },
+            net1 => qr/^net1: device number 0\.0\.0700 is already used by terminal0/,
+        ],
+        [
+            { tape1 => 'none,devno=0.0.0200' },
+            tape1 => qr/^tape1: device number 0\.0\.0200 is already used by fba1/,
+        ],
+        [
+            { tape1 => 'none' }, # default 0.0.0581
+            undef,
+        ],
+        [
+            { fba2 => 'local:100/vm-100-Y.raw,devno=0.0.0042' },
+            fba2 => qr/^fba2: device number 0\.0\.0042 is reserved for the virtio devices/,
+        ],
+        [
+            { terminal0 => '0.0.0300' },
+            terminal0 => qr/^terminal0: device number 0\.0\.0300 is already used by ckd0/,
+        ],
+        [
+            { ckd0 => 'local:100/vm-100-SYSRS1.raw,devno=0.0.0700', terminal0 => '0.0.0300' },
+            undef, # swapped in one change
+        ],
+        [
+            { net0 => 'qeth=BC:24:11:00:00:01,bridge=vmbr0,devno=0.0.06fe' },
+            net0 => qr/^net0: device number 0\.0\.06fe must be a multiple of 4/,
+        ],
+    ) {
+        my ($param, $key, $expected) = @$test;
+        $stored = dclone($base);
+        $written = 0;
+        my $what = join(' ', map { "--$_ $param->{$_}" } sort keys %$param);
+        for my $method (qw(update_vm update_vm_async)) {
+            my $err = api_error($method, $param);
+            if ($expected) {
+                is_deeply([keys %$err], [$key], "$method $what: error on $key")
+                    if ref($err) eq 'HASH';
+                like(ref($err) ? $err->{$key} : $err, $expected, "$method $what refused");
+                is($written, 0, "$method $what: nothing written");
+            } elsif ($method eq 'update_vm') {
+                ok(!ref($err) || !grep { m/devno|terminal|ckd|net|tape/ } keys %$err,
+                    "$method $what: no device number error") or diag explain $err;
+            }
+        }
+    }
+
+    # a config that has an overlap already (made by hand, or before overlaps were refused)
+    $stored = dclone($base);
+    $stored->{terminal1} = '0.0.0300';
+    my $err = api_error('update_vm', { name => 'other' });
+    is_deeply([keys %$err], ['terminal1'], 'unrelated change: error on the overlapping device');
+    like(
+        $err->{terminal1},
+        qr/^the configuration has conflicting device numbers, change the device number of 'terminal1' or 'ckd0' \(or remove it\) first - terminal1: device number 0\.0\.0300 is already used by ckd0/,
+        'unrelated change of an overlapping config: clear error',
+    );
+    is($written, 0, 'unrelated change of an overlapping config: nothing written');
+    $err = api_error('update_vm', { terminal1 => '0.0.0701' });
+    ok(!ref($err) || !$err->{terminal1}, 'the overlap can be fixed') or diag explain $err;
+    $stored = dclone($base);
+    $stored->{terminal1} = '0.0.0300';
+    $err = api_error('update_vm', { delete => 'terminal1' });
+    ok(!ref($err) || !$err->{terminal1}, 'the overlapping device can be removed')
+        or diag explain $err;
+
+    # pending changes are checked when they are applied
+    $stored = dclone($base);
+    $stored->{pending} = { terminal1 => '0.0.0300' };
+    eval { PVE::QemuServer::vmconfig_apply_pending(100, dclone($stored), {}) };
+    like(
+        $@,
+        qr/^terminal1: device number 0\.0\.0300 is already used by ckd0/,
+        'pending change with an overlap is not applied',
+    );
+    my $errors = {};
+    $qemu_server_module->unmock('vmconfig_hotplug_pending');
+    my $hotplug_conf = dclone($stored);
+    my $machine_module = Test::MockModule->new('PVE::QemuServer::Machine');
+    $machine_module->mock(get_current_qemu_machine => sub { return 'czam-v1'; });
+    eval {
+        PVE::QemuServer::vmconfig_hotplug_pending(100, $hotplug_conf, {}, undef, $errors);
+    };
+    like(
+        $errors->{terminal1} // $@,
+        qr/terminal1: device number 0\.0\.0300 is already used by ckd0/,
+        'pending change with an overlap is not hot-plugged',
+    );
+
+    # creation
+    my $cluster_module = Test::MockModule->new('PVE::Cluster');
+    $cluster_module->mock(
+        check_vmid_unused => sub { return; },
+        check_cfs_quorum => sub { return; },
+    );
+    my $rpcenv_module = Test::MockModule->new('PVE::RPCEnvironment');
+    $rpcenv_module->mock(check => sub { return 1; });
+    $err = api_error(
+        'create_vm',
+        {
+            arch => 's390x',
+            net0 => 'qeth=BC:24:11:00:00:01,bridge=vmbr0,devno=0.0.0400',
+            terminal0 => '0.0.0401',
+        },
+    );
+    is_deeply([keys %$err], ['terminal0'], 'create: error on the terminal');
+    like($err->{terminal0}, qr/already used by net0/, 'create: overlap refused');
+
+    mock_unreachable_config();
+};
+
+subtest 's390x: CKD DASDs are not resized' => sub {
+    is_deeply(
+        [keys %{ api_error('resize_vm', { disk => 'ckd0', size => '+1G' }) }],
+        ['disk'],
+        'resize of a CKD DASD: parameter error',
+    );
+    like(
+        api_error('resize_vm', { disk => 'ckd3', size => '20G' })->{disk},
+        qr/^CKD DASDs cannot be resized/,
+        'resize of a CKD DASD refused',
+    );
+    $rpcenv->set_user('root@pam');
+    my $err = api_error('resize_vm', { disk => 'fba0', size => '+1G' });
+    is(ref($err), '', 'resize of an FBA DASD is not refused by the parameter check');
+    like($err, qr/reached lock_config|tasks|worker/i, 'resize of an FBA DASD goes ahead')
+        or diag explain $err;
+};
+
+subtest 's390x hosts run s390x VMs only' => sub {
+    my $qemu_server_module = Test::MockModule->new('PVE::QemuServer');
+    $qemu_server_module->mock(get_host_arch => sub { return 's390x'; });
+    my $cluster_module = Test::MockModule->new('PVE::Cluster');
+    $cluster_module->mock(
+        check_vmid_unused => sub { return; },
+        check_cfs_quorum => sub { return; },
+    );
+    my $rpcenv_module = Test::MockModule->new('PVE::RPCEnvironment');
+    $rpcenv_module->mock(check => sub { return 1; });
+
+    for my $method (qw(update_vm update_vm_async create_vm)) {
+        for my $arch (qw(x86_64 aarch64)) {
+            my $err = api_error($method, { arch => $arch });
+            is(ref($err), 'HASH', "$method arch=$arch: parameter error");
+            like(
+                ref($err) ? $err->{arch} : $err,
+                qr/architecture '$arch' is not supported, an s390x host runs s390x VMs only/,
+                "$method arch=$arch refused",
+            );
+        }
+    }
+    eval { PVE::QemuServer::check_vm_arch_supported('s390x') };
+    is($@, '', 'arch=s390x accepted');
+    eval { PVE::QemuServer::check_restore_config({ arch => 'x86_64' }) };
+    like($@, qr/architecture 'x86_64' is not supported/, 'restore of a foreign VM refused');
+    eval {
+        PVE::QemuServer::check_restore_config({
+            arch => 's390x',
+            ckd0 => 'local:1/x.raw,devno=0.0.0300',
+            ckd1 => 'local:1/y.raw,devno=0.0.0300',
+        });
+    };
+    like($@, qr/^ckd1: device number 0\.0\.0300 is already used by ckd0/, 'restore with overlap');
+
+    $qemu_server_module->mock(get_host_arch => sub { return 'x86_64'; });
+    eval { PVE::QemuServer::check_vm_arch_supported('aarch64') };
+    is($@, '', 'other hosts are not affected');
 };
 
 done_testing();

@@ -16,6 +16,7 @@ use warnings;
 use File::Temp;
 
 use PVE::Storage;
+use PVE::QemuServer::Helpers;
 use PVE::Tools qw(run_command);
 
 use constant {
@@ -58,7 +59,7 @@ sub ckd_cylinders_of_drive {
     my ($drive) = @_;
 
     my ($model, $cylinders) = $drive->@{qw(model cylinders)};
-    if (defined($model)) {
+    if (defined($model) && $model ne '3390') { # '3390': a cylinder count of no standard model
         my $model_cylinders = $ckd_models->{$model} or die "unknown CKD model '$model'\n";
         die "'cylinders' $cylinders does not match model $model ($model_cylinders cylinders)\n"
             if defined($cylinders) && $cylinders != $model_cylinders;
@@ -69,6 +70,38 @@ sub ckd_cylinders_of_drive {
         if $cylinders < 1 || $cylinders > CKD_MAX_CYLINDERS;
 
     return $cylinders;
+}
+
+# The 3390 model of a CKD volume with $cylinders cylinders: '3390-<n>' for the standard sizes,
+# '3390' for others.
+sub ckd_model_of_cylinders {
+    my ($cylinders) = @_;
+
+    return '3390' if !defined($cylinders);
+    for my $model (sort keys %$ckd_models) {
+        return $model if $ckd_models->{$model} == $cylinders;
+    }
+    return '3390';
+}
+
+# The 'model' of a DASD drive, stored in the configuration when the volume is created, imported or
+# attached: the 3390 model of a CKD volume (by its cylinders), '9336' for an FBA volume. A given
+# model must match the cylinders. Not for the cloud-init drive.
+sub set_drive_model {
+    my ($key, $drive) = @_;
+
+    if ($drive->{interface} eq 'ckd') {
+        my ($model, $cylinders) = $drive->@{qw(model cylinders)};
+        if (!defined($model)) {
+            $drive->{model} = ckd_model_of_cylinders($cylinders) if defined($cylinders);
+        } elsif (defined($cylinders) && defined(my $model_cylinders = $ckd_models->{$model})) {
+            die "$key: a $model has $model_cylinders cylinders, the volume has $cylinders\n"
+                if $model_cylinders != $cylinders;
+        }
+    } elsif ($drive->{interface} eq 'fba') {
+        $drive->{model} //= '9336';
+    }
+    return;
 }
 
 # The 512-byte header of a CKD volume. $serial is the 12-character device serial QEMU reports in
@@ -343,41 +376,84 @@ sub dasd_volume_name {
     return $volname;
 }
 
-# Resize a CKD volume of a VM that is not running: grow it by whole cylinders, to at most
-# $newsize bytes, or by at most $increment bytes if given (the volume may be larger than its
-# cylinders need, so that is not the same), and write the new cylinder count into the header.
-# Returns the new size of the volume in bytes and the new cylinder count.
-sub resize_ckd_volume {
-    my ($storecfg, $volid, $newsize, $increment) = @_;
+# The QEMU device properties of the identity override of a DASD (drive options 'devtype' and
+# 'cutype', type and optional model in hex), as a string to append to the device. They need a QEMU
+# build whose eckd-ccw and fba-ccw devices have the properties (named like those of the 3270
+# device of QEMU-mod).
+# TODO: confirm the property names once QEMU-mod has them for the DASD devices.
+my $identity_properties = {
+    devtype => ['device-type', 'device-model'],
+    cutype => ['control-unit-type', 'control-unit-model'],
+};
 
-    my $header = check_ckd_volume($storecfg, $volid);
-    my $cylinders =
-        defined($increment)
-        ? $header->{cylinders} + int($increment / ckd_cylinder_size())
-        : int(($newsize - CKD_HEADER_SIZE) / ckd_cylinder_size());
-    $cylinders = CKD_MAX_CYLINDERS if $cylinders > CKD_MAX_CYLINDERS;
-    die "a CKD volume grows by whole cylinders of "
-        . ckd_cylinder_size()
-        . " bytes, up to "
-        . CKD_MAX_CYLINDERS
-        . " cylinders: no room to grow the $header->{cylinders} cylinders of '$volid'\n"
-        if $cylinders <= $header->{cylinders};
+sub identity_properties {
+    my ($drive_id, $drive, $arch) = @_;
 
-    my $size = PVE::Storage::volume_size_info($storecfg, $volid);
-    my $needed = ckd_volume_size($cylinders);
-    if ($needed > $size) {
-        PVE::Storage::volume_resize($storecfg, $volid, $needed, 0); # rounds up to whole KiB
-        $size = PVE::Storage::volume_size_info($storecfg, $volid);
+    my $res = '';
+    my $device = $drive->{interface} eq 'fba' ? 'fba-ccw' : 'eckd-ccw';
+    for my $opt (sort keys %$identity_properties) {
+        next if !defined($drive->{$opt});
+        my ($type_prop, $model_prop) = $identity_properties->{$opt}->@*;
+        my $binary = PVE::QemuServer::Helpers::get_command_for_arch($arch);
+        die "$drive_id: '$opt' needs a QEMU with the '$type_prop' property of the $device device,"
+            . " the installed one does not have it\n"
+            if !PVE::QemuServer::Helpers::kvm_device_has_property($binary, $device, $type_prop);
+        my ($type, $model) = $drive->{$opt} =~ m/^([0-9a-f]{4})(?:-([0-9a-f]{2}))?$/i
+            or die "$drive_id: invalid $opt '$drive->{$opt}'\n";
+        $res .= ",$type_prop=" . hex($type);
+        $res .= ",$model_prop=" . hex($model) if defined($model);
     }
+    return $res;
+}
 
-    my ($path, $format) = volume_path_and_format($storecfg, $volid);
-    write_image_head(
-        $path,
-        $format,
-        ckd_header($cylinders, $header->{serial}, $header->{identifier}),
-    );
+my $volume_name_re = qr/[A-Za-z0-9][A-Za-z0-9_-]{0,39}/;
 
-    return ($size, $cylinders);
+# The user given name of the volume of a volume ID 'vm-<vmid>-<name>' (of any VM, the source of a
+# restore or an import may be another one), without the file extension of the storage. For example
+# the VOLSER 'SYSRS1' of 'local-lvm:vm-300-SYSRS1'. Undef for a name the storage chose
+# ('disk-<n>', 'cloudinit') and for other volumes. Only looks at the string: the storage of a
+# backed up volume may not exist here.
+sub volume_name_of_volid {
+    my ($volid) = @_;
+
+    return if !defined($volid);
+    my ($name) = $volid =~ m!(?:^|[:/])vm-\d+-($volume_name_re)(?:\.(?:raw|qcow2|vmdk))?$! or return;
+    return if $name =~ m/^disk-\d+$/ || $name eq 'cloudinit';
+    return $name;
+}
+
+# The name for a DASD volume imported from $source (a volume ID or an absolute path): the name of
+# a volume 'vm-<vmid>-<name>', or of a Hercules DASD image file (like 'SYSRS1.ckd'). Undef for
+# other sources: the members of an OVA carry their name as drive option 'name'.
+sub import_source_volume_name {
+    my ($source) = @_;
+
+    return if !defined($source);
+    if ($source =~ m!(?:^/|^[^/:]+:import/)(?:[^/]*/)*($volume_name_re)\.(?:ckd|ckd64|fba)$!i) {
+        return $1;
+    }
+    return if $source =~ m!\.ova/!;
+    return volume_name_of_volid($source);
+}
+
+# Allocate a volume called 'vm-<vmid>-<name>' (see dasd_volume_name()), or, if that is not
+# possible (the name is taken on the storage), one with a name the storage chooses, with a warning.
+# For the volumes of imported and restored DASDs, which keep the names of their source volumes.
+# $what names the drive in the warning. Returns the volume ID.
+sub alloc_named_volume {
+    my ($storecfg, $storeid, $vmid, $fmt, $name, $size_kib, $what) = @_;
+
+    if (defined($name) && $name ne '') {
+        my $volname = dasd_volume_name($storecfg, $storeid, $vmid, $fmt, $name);
+        my $volid =
+            eval { PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, $fmt, $volname, $size_kib) };
+        return $volid if defined($volid);
+        my $err = $@ // '';
+        chomp($err);
+        warn "warning: $what: unable to allocate the volume '$volname' on storage '$storeid'"
+            . " ($err), using the default volume name\n";
+    }
+    return PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, $fmt, undef, $size_kib);
 }
 
 1;

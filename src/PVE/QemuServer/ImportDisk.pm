@@ -8,6 +8,7 @@ use PVE::Tools qw(run_command extract_param);
 
 use PVE::QemuConfig;
 use PVE::QemuServer;
+use PVE::QemuServer::DASD;
 use PVE::QemuServer::QemuImage;
 
 # imports an external disk image to an existing VM
@@ -16,6 +17,7 @@ use PVE::QemuServer::QemuImage;
 # $params->{format} may be used to specify qcow2, raw, etc ...
 # $params->{skiplock} may be used to skip checking for a lock in the VM config
 # $params->{'skip-config-update'} may be used to import the disk without updating the VM config
+# $params->{'volume-name'} may be the name for the volume, 'vm-<vmid>-<name>' if it is free
 sub do_import {
     my ($src_path, $src_size, $vmid, $storage_id, $params) = @_;
 
@@ -32,13 +34,11 @@ sub do_import {
     warn "format '$format' is not supported by the target storage - using '$dst_format' instead\n"
         if $format && $format ne $dst_format;
 
-    my $dst_volid = PVE::Storage::vdisk_alloc(
-        $storecfg,
-        $storage_id,
-        $vmid,
-        $dst_format,
-        undef,
-        $src_size / 1024,
+    # a DASD keeps the name of its source volume, if it is free
+    my $volume_name = extract_param($params, 'volume-name');
+    my $dst_volid = PVE::QemuServer::DASD::alloc_named_volume(
+        $storecfg, $storage_id, $vmid, $dst_format, $volume_name, $src_size / 1024,
+        $drive_name // 'import',
     );
 
     my $zeroinit = PVE::Storage::volume_has_feature($storecfg, 'sparseinit', $dst_volid);

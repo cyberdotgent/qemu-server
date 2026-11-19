@@ -29,6 +29,7 @@ package PVE::QemuServer::CCW;
 use strict;
 use warnings;
 
+use PVE::Exception;
 use PVE::JSONSchema;
 use PVE::Tools;
 
@@ -254,45 +255,113 @@ my sub reserved_by {
     return;
 }
 
-=head3 check_devno_conflicts($conf, [$current_only], [$override])
+=head3 find_devno_conflict($conf, [$current_only], [$override], [$changed])
 
-Dies if a configured device number of the VM configuration (including the pending changes, unless
-C<$current_only> is set, and C<$override>, see get_devno_users()) is invalid, in a reserved range,
-leaves no room for all device numbers of the device, or is used twice.
+The first problem with the configured device numbers of the VM configuration (including the
+pending changes, unless C<$current_only> is set, and C<$override>, see get_devno_users()): a device
+number that is invalid, in a reserved range, leaves no room for all device numbers of the device,
+or overlaps with another device. All CCW devices count: DASDs (also the cloud-init FBA DASD), tape
+drives, the read/write/data triplets of qeth adapters and 3270 terminals; the VirtIO CCW devices
+have the reserved range. C<$changed> is a list of keys being changed: they are checked after the
+others, so an overlap is reported on the changed device. Returns undef or
+C<{ key, other, message }> (C<other> is the key of the other device of an overlap).
 
 =cut
 
-sub check_devno_conflicts {
-    my ($conf, $current_only, $override) = @_;
+my sub devno_range_text {
+    my ($ssid, $devno, $count) = @_;
+    return print_devno($ssid, $devno) if $count == 1;
+    return print_devno($ssid, $devno) . '-' . print_devno($ssid, $devno + $count - 1);
+}
+
+sub find_devno_conflict {
+    my ($conf, $current_only, $override, $changed) = @_;
 
     my $users = get_devno_users($conf, $current_only, $override);
+    my $is_changed = { map { $_ => 1 } ($changed // [])->@* };
+    $users = [
+        (grep { !$is_changed->{ $_->{key} } } @$users),
+        (grep { $is_changed->{ $_->{key} } } @$users),
+    ];
+
     my $used = {};
+    my $ranges = {};
     for my $user ($users->@*) {
         next if !defined($user->{devno});
         my $key = $user->{key};
+        my $conflict = sub {
+            my ($message, $other) = @_;
+            return { key => $key, other => $other, message => "$key: $message\n" };
+        };
         my ($ssid, $devno) = eval { parse_devno($user->{devno}) };
-        die "$key: $@" if $@;
+        if (my $err = $@) {
+            chomp($err);
+            return $conflict->($err);
+        }
         my $count = $user->{count};
-        die "$key: device number $user->{devno} leaves no room for $count device numbers\n"
+        return $conflict->("device number $user->{devno} leaves no room for $count device numbers")
             if $devno + $count - 1 > 0xffff;
         my $info = $devno_kinds->{ $user->{kind} };
         if ($info && $info->{align} > 1 && $devno % $info->{align}) {
-            die "$key: device number $user->{devno} must be a multiple of"
-                . sprintf(" %x\n", $info->{align});
+            return $conflict->(
+                "device number $user->{devno} must be a multiple of" . sprintf(" %x", $info->{align}),
+            );
         }
+        $ranges->{$key} = devno_range_text($ssid, $devno, $count);
         for my $i (0 .. $count - 1) {
             my $printed = print_devno($ssid, $devno + $i);
             if (my $reserved = reserved_by($ssid, $devno + $i)) {
-                die "$key: device number $printed is reserved for the $reserved devices\n";
+                return $conflict->("device number $printed is reserved for the $reserved devices");
             }
             if (my $other = $used->{ "$ssid." . ($devno + $i) }) {
-                die "$key: device number $printed is already used by $other\n";
+                my $message = "device number $printed is already used by $other";
+                if ($ranges->{$key} ne $printed || $ranges->{$other} ne $printed) {
+                    $message .= " ($key: $ranges->{$key}, $other: $ranges->{$other})";
+                }
+                return $conflict->($message, $other);
             }
             $used->{ "$ssid." . ($devno + $i) } = $key;
         }
     }
 
     return;
+}
+
+=head3 check_devno_conflicts($conf, [$current_only], [$override], [$changed])
+
+Dies with the message of find_devno_conflict(), if there is a problem.
+
+=cut
+
+sub check_devno_conflicts {
+    my ($conf, $current_only, $override, $changed) = @_;
+
+    my $conflict = find_devno_conflict($conf, $current_only, $override, $changed) or return;
+    die $conflict->{message};
+}
+
+=head3 assert_devno_config($conf, [$current_only], [$override], [$changed])
+
+Like check_devno_conflicts(), for the API: raises a parameter exception on the key of the
+offending device. If neither device of an overlap is being changed (C<$changed>), the configuration
+had the overlap before (written before overlaps were refused, or by hand): the message says so, an
+unrelated change is refused as well until one of the devices gets another device number or is
+removed.
+
+=cut
+
+sub assert_devno_config {
+    my ($conf, $current_only, $override, $changed) = @_;
+
+    my $conflict = find_devno_conflict($conf, $current_only, $override, $changed) or return;
+    my ($key, $other, $message) = $conflict->@{qw(key other message)};
+    my $is_changed = { map { $_ => 1 } ($changed // [])->@* };
+    if (scalar(keys %$is_changed) && !$is_changed->{$key} && !($other && $is_changed->{$other})) {
+        chomp($message);
+        $message = "the configuration has conflicting device numbers, change the device number of"
+            . " '$key'" . ($other ? " or '$other'" : '') . " (or remove it) first - $message\n";
+    }
+    PVE::Exception::raise_param_exc({ $key => $message });
 }
 
 =head3 next_free_devno($conf, $kind, [$extra_used], [$skip_key], [$override])

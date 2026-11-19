@@ -528,6 +528,28 @@ my %dasd_fmt = (
             . " creating the disk, if not given.",
         optional => 1,
     },
+    # Identity override for special cases (CLI/config only): a guest that needs to see another
+    # device or control unit type than the emulated one, like a 3380 on 3390 geometry, as the
+    # storage arrays offered it for old operating systems.
+    devtype => {
+        type => 'string',
+        pattern => '[0-9a-fA-F]{4}(?:-[0-9a-fA-F]{2})?',
+        format_description => 'type[-model]',
+        description => "Expert option: the device type (and model) the guest sees in the device"
+            . " identification, hexadecimal, for example '3380' or '3380-0e', instead of the"
+            . " emulated device's. The geometry and the commands stay those of the emulated"
+            . " device. Needs a QEMU build with the 'device-type' property of the DASD device.",
+        optional => 1,
+    },
+    cutype => {
+        type => 'string',
+        pattern => '[0-9a-fA-F]{4}(?:-[0-9a-fA-F]{2})?',
+        format_description => 'type[-model]',
+        description => "Expert option: the control unit type (and model) the guest sees in the"
+            . " device identification, hexadecimal, for example '3990-ec'. Needs a QEMU build"
+            . " with the 'control-unit-type' property of the DASD device.",
+        optional => 1,
+    },
 );
 
 # 'media' only for a cloud-init drive, which is an FBA DASD on s390x
@@ -535,6 +557,13 @@ my $fba_fmt = {
     %drivedesc_base{qw(volume file media format size backup replicate shared)},
     %readonly_fmt,
     %dasd_fmt,
+    model => {
+        type => 'string',
+        enum => [qw(9336)],
+        description => "The device model of the DASD. Set when the volume is created or"
+            . " imported, informational.",
+        optional => 1,
+    },
 };
 my $fbadesc = {
     optional => 1,
@@ -553,6 +582,14 @@ my $fbadesc = {
 PVE::JSONSchema::register_standard_option("pve-qm-fba", $fbadesc);
 
 my %ckd_fmt = (
+    model => {
+        type => 'string',
+        enum => [qw(3390 3390-1 3390-2 3390-3 3390-9 3390-27 3390-54)],
+        description => "The 3390 model of the volume, '3390' for a cylinder count of no standard"
+            . " model. Set when the volume is created or imported. When creating a volume, its"
+            . " size can be given as model instead of 'cylinders'.",
+        optional => 1,
+    },
     cylinders => {
         type => 'integer',
         minimum => 1,
@@ -587,16 +624,6 @@ my %dasd_alloc_fmt = (
         format_description => 'name',
         description => "Name of the new volume, it is called 'vm-<vmid>-<name>' on the"
             . " storage. For example the volume serial (VOLSER) the guest will give the volume.",
-        optional => 1,
-    },
-);
-
-my %ckd_alloc_fmt = (
-    model => {
-        type => 'string',
-        enum => [qw(3390-1 3390-2 3390-3 3390-9 3390-27 3390-54)],
-        description => "Create a volume of the size of this 3390 model. Alternatively, give"
-            . " the number of 'cylinders'.",
         optional => 1,
     },
 );
@@ -703,7 +730,6 @@ use constant TPMSTATE_DISK_SIZE => 4 * 1024 * 1024;
 my $alldrive_fmt = {
     %drivedesc_base,
     %iothread_fmt,
-    %model_fmt,
     %product_fmt,
     %queues_fmt,
     %readonly_fmt,
@@ -715,6 +741,7 @@ my $alldrive_fmt = {
     %efitype_fmt,
     %dasd_fmt,
     %ckd_fmt,
+    %model_fmt, # 'model' of all drive types for printing, the drive types check their own
 };
 
 my %import_from_fmt = (
@@ -730,7 +757,7 @@ my %import_from_fmt = (
 );
 
 my $alldrive_fmt_with_alloc = {
-    %$alldrive_fmt, %import_from_fmt, %dasd_alloc_fmt, %ckd_alloc_fmt,
+    %$alldrive_fmt, %import_from_fmt, %dasd_alloc_fmt,
 };
 
 my $unused_fmt = {
@@ -764,7 +791,6 @@ my $desc_with_alloc = sub {
 
     $new_desc->{format}->{'import-from'} = $import_from_fmt{'import-from'};
     $new_desc->{format}->{name} = $dasd_alloc_fmt{name} if $type eq 'fba' || $type eq 'ckd';
-    $new_desc->{format}->{model} = $ckd_alloc_fmt{model} if $type eq 'ckd';
 
     my $extra_note = '';
     if ($type eq 'efidisk') {
