@@ -33,6 +33,7 @@ use PVE::QemuMigrate::Helpers;
 use PVE::QemuServer::Agent;
 use PVE::QemuServer::BlockJob;
 use PVE::QemuServer::CPUConfig;
+use PVE::QemuServer::Console3270;
 use PVE::QemuServer::Drive qw(checked_volume_format update_tpmstate_size);
 use PVE::QemuServer::Helpers qw(min_version);
 use PVE::QemuServer::Machine;
@@ -1755,6 +1756,24 @@ sub phase3_cleanup {
                     $self->{errors} = 1;
                 }
             }
+        }
+
+        # The 3270 consoles of an s390x VM must be connected while it runs: start their sessions
+        # on the target, which needs the config there, before the VM resumes.
+        if (!$self->{opts}->{remote}
+            && scalar(keys PVE::QemuServer::Console3270::get_consoles($conf)->%*)
+        ) {
+            my $unit = PVE::QemuServer::Console3270::unit_name($vmid);
+            my $cmd = build_ssh_command($self->{rem_ssh}, ['/bin/systemctl', 'start', $unit]);
+            eval {
+                PVE::Tools::run_command(
+                    $cmd,
+                    outfunc => sub { },
+                    errfunc => sub { $self->log('warn', $_[0]) },
+                );
+            };
+            $self->log('warn', "starting the 3270 console sessions on the target failed - $@")
+                if $@;
         }
 
         # deletes local FDB entries if learning is disabled, they'll be re-added on target on resume

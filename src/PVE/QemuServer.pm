@@ -6241,8 +6241,11 @@ sub vm_start_nolock {
     my $qemu_pkg_string = PVE::QemuServer::QMPHelpers::get_qemu_package_string($vmid);
     syslog("info", "VM $vmid started with PID $pid using $qemu_pkg_string.");
 
-    # the 3270 consoles of s390x VMs stay connected as long as the VM runs
-    PVE::QemuServer::Console3270::start_sessions($vmid, $conf);
+    # the 3270 consoles of s390x VMs stay connected as long as the VM runs. The sessions read the
+    # config, the target of a migration within the cluster starts them once it has the config,
+    # before the VM resumes (see PVE::QemuMigrate::phase3_cleanup()).
+    PVE::QemuServer::Console3270::start_sessions($vmid, $conf)
+        if !$migratedfrom || $migrate_opts->{remote_node};
 
     if (defined(my $migrate = $res->{migrate})) {
         if ($migrate->{proto} eq 'tcp') {

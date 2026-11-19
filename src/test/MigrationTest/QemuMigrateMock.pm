@@ -352,6 +352,13 @@ $MigrationTest::Shared::tools_module->mock(
                 $cmd = shift @{$cmd_tail};
                 if ($cmd eq '/bin/true') {
                     return 0;
+                } elsif ($cmd eq '/bin/systemctl') {
+                    my ($action, $unit) = map { $_ =~ s/^\'(.*)\'$/$1/r } $cmd_tail->@*;
+                    if ($action eq 'start' && $unit eq "pve-qemu-3270\@${test_vmid}.service") {
+                        delete $expected_calls->{ssh_start_3270_sessions};
+                        return 0;
+                    }
+                    die "run_command (mocked) ssh systemctl command - implement me: ${cmd_msg}";
                 } elsif ($cmd eq 'qm') {
                     $cmd_tail = [map { $_ =~ s/^\'(.*)\'$/$1/r } $cmd_tail->@*];
                     $cmd = shift @{$cmd_tail};
