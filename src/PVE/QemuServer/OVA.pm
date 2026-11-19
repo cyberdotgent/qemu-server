@@ -25,6 +25,7 @@ use Digest::SHA;
 use File::Path;
 use POSIX qw(strftime);
 
+use PVE::Format qw(render_bytes);
 use PVE::Storage;
 use PVE::Tools qw(run_command);
 
@@ -545,6 +546,23 @@ Returns the volume ID of the OVA. Runs in a worker; the VM is locked ('export') 
 
 =cut
 
+# The progress of 'qemu-img convert -p' (one "(<n>/100%)" update per percent, separated by CR) as
+# a line per update, like the disk copies of upstream (PVE::QemuServer::QemuImage::convert()).
+sub progress_printer {
+    my ($key, $size) = @_;
+
+    my $last = '';
+    return sub {
+        my ($line) = @_;
+        my ($percent) = $line =~ m/\((\S+)\/100\%\)/ or return;
+        return if $percent eq $last;
+        $last = $percent;
+        my $transferred = int($size * $percent / 100);
+        print "$key: transferred " . render_bytes($transferred, 1) . " of "
+            . render_bytes($size, 1) . " ($percent%)\n";
+    };
+}
+
 sub export_ova {
     my ($storecfg, $vmid, $storeid, $opts) = @_;
 
@@ -620,6 +638,7 @@ sub export_ova {
                     "$stage/$file",
                 ],
                 errmsg => "$disk->{key}: unable to export '$src'",
+                outfunc => progress_printer($disk->{key}, $capacity),
             );
             $disk->{href} = $file;
             $disk->{file_size} = -s "$stage/$file";

@@ -478,4 +478,22 @@ SKIP: {
     like($@, qr/only for creating or changing/, 'import-from is not started');
 }
 
+# qemu-img progress as a line per update, not CR-separated on one line
+{
+    my $out = '';
+    open(my $fh, '>', \$out);
+    my $old = select($fh);
+    my $printer = PVE::QemuServer::OVA::progress_printer('ckd0', 1024 * 1024 * 1024);
+    $printer->($_) for ('    (0.00/100%)', '    (0.00/100%)', '    (50.00/100%)', 'other', '    (100.00/100%)');
+    select($old);
+    close($fh);
+    is(
+        $out,
+        "ckd0: transferred 0.0 B of 1.0 GiB (0.00%)\n"
+            . "ckd0: transferred 512.0 MiB of 1.0 GiB (50.00%)\n"
+            . "ckd0: transferred 1.0 GiB of 1.0 GiB (100.00%)\n",
+        'export progress lines',
+    );
+}
+
 done_testing();
