@@ -499,6 +499,19 @@ SKIP: {
 }
 
 
+# pending changes are not exported, the export warns
+{
+    is(PVE::QemuServer::OVA::pending_warning({ memory => 1024 }), undef, 'no pending: no warning');
+    is(PVE::QemuServer::OVA::pending_warning({ pending => {} }), undef, 'empty pending: no warning');
+    like(
+        PVE::QemuServer::OVA::pending_warning({
+            pending => { ipl => 'ckd0', memory => 4096, delete => 'tape0,!net1' },
+        }),
+        qr/^pending changes \(ipl, memory, -net1, -tape0\) are not exported/,
+        'pending changes and deletions named',
+    );
+}
+
 # an OVA disk image is extracted into a temporary directory on a file based working storage
 # without 'images' content, under the name of the drive
 {

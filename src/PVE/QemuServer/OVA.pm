@@ -165,6 +165,29 @@ sub export_disks {
     return ($disks, $warnings);
 }
 
+=head3 pending_warning
+
+    my $warning = pending_warning($conf);
+
+A warning if C<$conf> has pending changes, which an OVA does not include: it has the current
+configuration, as the VM runs now. C<undef> without pending changes.
+
+=cut
+
+sub pending_warning {
+    my ($conf) = @_;
+
+    my $pending = $conf->{pending} // {};
+    my @keys = sort grep { $_ ne 'delete' } keys %$pending;
+    # deletions, '!' marks a forced one
+    my @deleted = map { s/^!//r } PVE::Tools::split_list($pending->{delete} // '');
+    push @keys, map { "-$_" } sort { $a cmp $b } @deleted;
+    return undef if !scalar(@keys);
+    return "pending changes (" . join(', ', @keys) . ") are not exported, the OVA has the"
+        . " current configuration: apply them (start and stop the VM, or revert them) and"
+        . " export again to include them";
+}
+
 =head3 export_media
 
     my $media = export_media($conf, $name);
@@ -601,6 +624,9 @@ sub export_ova {
         delete $conf->{lock};
         my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
         my ($disks, $warnings) = export_disks($conf);
+        if (my $pending = pending_warning($conf)) {
+            unshift @$warnings, $pending;
+        }
         warn "warning: $_\n" for @$warnings;
         my $media = ($opts->{'include-media'} // 1) ? export_media($conf, $name) : {};
 
