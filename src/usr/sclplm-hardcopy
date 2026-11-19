@@ -1,0 +1,18 @@
+#!/usr/bin/perl
+
+# Rotate the log of the SCLP line-mode console of a running s390x VM and forward it to the syslog
+# server of its config, run by pve-qemu-sclplm@<vmid>.service (PVE::QemuServer::SclpLog).
+
+use strict;
+use warnings;
+
+use PVE::QemuConfig;
+use PVE::QemuServer;
+use PVE::QemuServer::SclpLog;
+
+my $vmid = shift;
+die "usage: $0 <vmid>\n" if !defined($vmid) || $vmid !~ m/^(\d+)$/;
+$vmid = $1;
+
+$| = 1;
+PVE::QemuServer::SclpLog::run_daemon($vmid);

@@ -1727,19 +1727,38 @@ sub transfer_sclp_log {
     my $path = PVE::QemuServer::SclpLog::log_path($vmid);
     return if !-f $path;
 
-    my $log = PVE::Tools::file_get_contents($path, 1024 * 1024 * 1024);
+    # the current file only (at most the rotation size), older generations stay on the source
+    my $log = PVE::Tools::file_get_contents($path, 2 * $PVE::QemuServer::SclpLog::ROTATE_SIZE);
     $log .= Encode::encode(
         'UTF-8',
         PVE::QemuServer::SclpLog::marker_line(
             "migrated from " . PVE::INotify::nodename() . " to $self->{node}"),
     );
-    # untaint, the path is built from the VMID
+    # untaint, the paths are built from the VMID
     my ($target_path) = $path =~ m|^(/var/log/qemu-server/\d+-sclplm\.log)$|
         or die "unexpected log path '$path'\n";
-    my $cmd = build_ssh_command($self->{rem_ssh}, ['/bin/sh', '-c', "cat >> $target_path"]);
+    my ($state_path) = PVE::QemuServer::SclpLog::state_file($vmid) =~ m|^(/\S+\.sclplm\.fwd)$|
+        or die "unexpected state path\n";
+    # the forwarder on the target goes on after what the source forwarded
+    my $cmd = build_ssh_command(
+        $self->{rem_ssh},
+        [
+            '/bin/sh',
+            '-c',
+            "cat >> $target_path && stat -c '%i %s' $target_path > $state_path",
+        ],
+    );
     PVE::Tools::run_command($cmd, input => $log, outfunc => sub { }, errfunc => sub { });
     unlink($path);
     $self->log('info', "moved the line-mode console log to the target");
+
+    my $start = build_ssh_command(
+        $self->{rem_ssh},
+        ['/bin/systemctl', 'start', '--no-block', PVE::QemuServer::SclpLog::unit_name($vmid)],
+    );
+    eval { PVE::Tools::run_command($start, outfunc => sub { }, errfunc => sub { }) };
+    $self->log('warn', "starting the line-mode console log unit on the target failed - $@")
+        if $@;
 }
 
 sub phase3_cleanup {

@@ -428,6 +428,7 @@ EODESC
         description => "The device to IPL (boot) an s390x VM from, with an optional load"
             . " parameter, instead of the boot order.",
     },
+    'sclplm-syslog' => $PVE::QemuServer::SclpLog::syslog_desc,
     netboot => $PVE::QemuServer::Netboot::netboot_desc,
     'netboot-cmdline' => $PVE::QemuServer::Netboot::netboot_cmdline_desc,
     bootdisk => {
@@ -4857,6 +4858,8 @@ my $fast_plug_option = {
     'name' => 1,
     'onboot' => 1,
     'protection' => 1,
+    # the line-mode console log unit of a running VM reads it from the config
+    'sclplm-syslog' => 1,
     'shares' => 1,
     'startup' => 1,
     'tags' => 1,
@@ -6349,6 +6352,12 @@ sub vm_start_nolock {
     PVE::QemuServer::Console3270::start_sessions($vmid, $conf)
         if !$migratedfrom || $migrate_opts->{remote_node};
 
+    # the unit that rotates and forwards the log of the line-mode console, on the target of a
+    # migration within the cluster once the log moved (PVE::QemuMigrate::phase3_cleanup())
+    PVE::QemuServer::SclpLog::start_unit($vmid)
+        if (!$migratedfrom || $migrate_opts->{remote_node})
+        && grep { $_ eq PVE::QemuServer::SclpLog::chardev_option($vmid) } $cmd->@*;
+
     if (defined(my $migrate = $res->{migrate})) {
         if ($migrate->{proto} eq 'tcp') {
             my $nodename = nodename();
@@ -6683,6 +6692,8 @@ sub vm_stop_cleanup {
             if PVE::QemuServer::Helpers::qsd_running_locally($vmid);
 
         PVE::QemuServer::Console3270::stop_sessions($vmid, $conf);
+        PVE::QemuServer::SclpLog::stop_unit($vmid)
+            if PVE::QemuServer::Helpers::get_vm_arch($conf) eq 's390x';
 
         # ensure that no dbus-vmstate helper is left running in any case
         # at this point, it should never be still running, so quiesce any warnings

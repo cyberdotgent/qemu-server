@@ -1146,6 +1146,7 @@ my $generaloptions = {
     'ostype' => 1,
     'protection' => 1,
     'reboot' => 1,
+    'sclplm-syslog' => 1,
     'startdate' => 1,
     'startup' => 1,
     'tdf' => 1,
@@ -2593,8 +2594,16 @@ __PACKAGE__->register_method({
                 default => 1024 * 1024,
                 optional => 1,
             },
+            generation => {
+                description => "Read an older log file: 1 is the newest (<log>.1). The log is"
+                    . " rotated at 64 MiB and at every start of the VM, see 'files'.",
+                type => 'integer',
+                minimum => 0,
+                default => 0,
+                optional => 1,
+            },
             previous => {
-                description => "Read the log of the previous run of the VM instead.",
+                description => "Deprecated, use 'generation' 1.",
                 type => 'boolean',
                 default => 0,
                 optional => 1,
@@ -2617,6 +2626,19 @@ __PACKAGE__->register_method({
                 type => 'boolean',
             },
             data => { description => "Whole lines of the log (LF line ends).", type => 'string' },
+            files => {
+                description => "The log files of the VM, the current one (generation 0) first.",
+                type => 'array',
+                items => {
+                    type => 'object',
+                    properties => {
+                        generation => { type => 'integer' },
+                        name => { type => 'string' },
+                        size => { type => 'integer' },
+                        mtime => { type => 'integer' },
+                    },
+                },
+            },
         },
     },
     code => sub {
@@ -2625,9 +2647,12 @@ __PACKAGE__->register_method({
         my $vmid = $param->{vmid};
         $assert_sclp_log->($vmid);
 
-        return PVE::QemuServer::SclpLog::read_log(
-            $vmid, $param->{start}, $param->{tail}, $param->{limit}, $param->{previous},
+        my $generation = $param->{generation} // ($param->{previous} ? 1 : 0);
+        my $res = PVE::QemuServer::SclpLog::read_log(
+            $vmid, $param->{start}, $param->{tail}, $param->{limit}, $generation,
         );
+        $res->{files} = PVE::QemuServer::SclpLog::list_files($vmid);
+        return $res;
     },
 });
 
@@ -2666,7 +2691,8 @@ __PACKAGE__->register_method({
         $assert_sclp_log->($vmid);
         die "VM $vmid not running\n" if !PVE::QemuServer::check_running($vmid);
 
-        PVE::QemuServer::SclpLog::send_command($vmid, $param->{command});
+        my $user = PVE::RPCEnvironment::get()->get_user();
+        PVE::QemuServer::SclpLog::send_command($vmid, $param->{command}, $user);
         return;
     },
 });
@@ -3558,6 +3584,8 @@ my $update_vm_api = sub {
                     PVE::QemuServer::IPL::check_ipl_config(
                         $get_config_with_pending->($conf), $storecfg,
                     );
+                } elsif ($opt eq 'sclplm-syslog') {
+                    die "only s390x VMs have an SCLP line-mode console\n" if $arch ne 's390x';
                 }
             }
             # the CCW devices with a device number (a 3270 terminal has it as default key)

@@ -1,0 +1,32 @@
+[Unit]
+Description=PVE SCLP line-mode console log (VM %i)
+BindsTo=%i.scope
+After=%i.scope
+
+[Service]
+Slice=qemu.slice
+Type=simple
+Environment=LANG=C.UTF-8
+ExecStart=/usr/libexec/qemu-server/sclplm-hardcopy %i
+Restart=on-failure
+RestartSec=2
+# Reads the log QEMU writes and the VM config, rotates the log (files and QMP), and talks to the
+# syslog server of the VM: Unix sockets (QMP) and the network, nothing else.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=/var/log/qemu-server /run/qemu-server
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes

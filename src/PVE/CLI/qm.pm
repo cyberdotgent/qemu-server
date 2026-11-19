@@ -36,6 +36,7 @@ use PVE::QemuServer::Drive qw(is_valid_drivename parse_drive print_drive);
 use PVE::QemuServer::Helpers;
 use PVE::QemuServer::Agent;
 use PVE::QemuServer::Console3270;
+use PVE::QemuServer::SclpLog;
 use PVE::QemuServer::ImportDisk;
 use PVE::QemuServer::Monitor qw(mon_cmd);
 use PVE::QemuServer::OVMF;
@@ -897,6 +898,13 @@ __PACKAGE__->register_method({
         }
 
         print "starting serial terminal on interface ${iface}${escapemsg}\n";
+
+        if ($iface eq 'sclplm') {
+            # the commands entered here go to the console's log, as input of this user
+            my $user = eval { PVE::RPCEnvironment::get()->get_user() } // 'root@pam';
+            PVE::QemuServer::SclpLog::terminal($vmid, $escape, $user);
+            return;
+        }
 
         system($cmd->@*);
 
