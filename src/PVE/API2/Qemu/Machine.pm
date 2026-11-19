@@ -45,7 +45,8 @@ __PACKAGE__->register_method({
                     type => 'string',
                     description => "The machine type, like 'q35', 'i440fx', 'virt' or"
                         . " 's390-ccw-virtio'. For an unversioned machine type of the QEMU build,"
-                        . " its name.",
+                        . " its name; for a versioned one with an alias (s390x 'czam-v1'), the"
+                        . " alias ('czam').",
                 },
                 class => {
                     type => 'string',
@@ -68,13 +69,15 @@ __PACKAGE__->register_method({
                 },
                 version => {
                     type => 'string',
-                    description => "The machine version.",
+                    description => "The machine version. For a versioned machine type of the"
+                        . " QEMU build with an alias, its version ('v1' of 'czam-v1'), for other"
+                        . " machine types of the QEMU build the QEMU version.",
                 },
                 changes => {
                     type => 'string',
                     optional => 1,
-                    description =>
-                        'Notable changes of a version, currently only set for +pveX versions.',
+                    description => 'Notable changes of a version, currently only set for +pveX'
+                        . ' versions, and only where they change something for the architecture.',
                 },
             },
         },
@@ -101,7 +104,14 @@ __PACKAGE__->register_method({
                         version => $machine->{version} . $pve_revision,
                     };
 
-                    if (defined(my $changes = $pve_machine->{revisions}->{$pve_revision})) {
+                    my ($base_version) = $machine->{version} =~ m/^(\d+\.\d+)/;
+                    if (
+                        defined(
+                            my $changes = PVE::QemuServer::Machine::machine_revision_changes(
+                                $base_version, $pve_revision, $arch,
+                            )
+                        )
+                    ) {
                         $entry->{changes} = $changes;
                     }
 
@@ -120,20 +130,11 @@ __PACKAGE__->register_method({
         if ($arch eq 's390x') {
             $_->{class} = 'virtio' for $supported_machine_list->@*;
 
-            # the unversioned machine types the QEMU build offers, used as-is
+            # the unversioned machine types the QEMU build offers, used as-is; the versioned ones
+            # with an alias are versions of the alias (czam-v1 of czam)
             my $kvm_binary = PVE::QemuServer::Helpers::get_command_for_arch($arch);
-            my $types = PVE::QemuServer::Machine::s390x_mainframe_machine_types($kvm_binary);
-            my $version = PVE::QemuServer::Helpers::kvm_user_version($kvm_binary);
-            $version =~ s/^(\d+\.\d+).*$/$1/;
-            unshift $supported_machine_list->@*, map {
-                {
-                    id => $_,
-                    type => $_,
-                    version => $version,
-                    class => 'mainframe',
-                    description => $types->{$_},
-                }
-            } sort keys %$types;
+            unshift $supported_machine_list->@*,
+                PVE::QemuServer::Machine::s390x_mainframe_machine_entries($kvm_binary)->@*;
 
             my $default = PVE::QemuServer::Machine::default_new_machine_for_arch($arch, $kvm_binary);
             for my $entry ($supported_machine_list->@*) {

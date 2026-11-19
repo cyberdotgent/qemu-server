@@ -54,6 +54,32 @@ our $PVE_MACHINE_VERSION = {
     },
 };
 
+# The architectures a +pveX revision changes something for, where that is not all of them (the
+# revision exists for every machine type of the version, its change note is only shown for these).
+our $PVE_MACHINE_REVISION_ARCHES = {
+    '9.2+pve1' => ['x86_64'], # S3/S4 power states (ACPI of the PC machines)
+    '11.0+pve2' => ['x86_64'], # hv_emcs (Hyper-V enlightenment)
+};
+
+=head3 machine_revision_changes
+
+    my $changes = machine_revision_changes('11.0', '+pve2', $arch);
+
+The change note of a +pveX revision of a machine version, undef if there is none or if the
+revision changes nothing for C<$arch>.
+
+=cut
+
+sub machine_revision_changes {
+    my ($version, $revision, $arch) = @_;
+
+    my $pve_machine = $PVE_MACHINE_VERSION->{$version} or return undef;
+    my $changes = $pve_machine->{revisions}->{$revision} // return undef;
+    my $arches = $PVE_MACHINE_REVISION_ARCHES->{"$version$revision"};
+    return undef if $arches && defined($arch) && !grep { $_ eq $arch } @$arches;
+    return $changes;
+}
+
 # Machine types of the families known to qemu-server, with or without a version. Any other machine
 # type is an unversioned one provided by the QEMU build, e.g. the additional s390x machines of
 # QEMU-mod. Those are used as-is: they follow the installed QEMU binary and get neither a version
@@ -223,6 +249,52 @@ sub s390x_mainframe_machine_types {
                     && $types->{$_} !~ m/\(deprecated\)/
             } keys %$types
     };
+}
+
+=head3 s390x_mainframe_machine_entries
+
+    my $entries = s390x_mainframe_machine_entries($kvm_binary);
+
+The mainframe class machine types of the QEMU binary as entries of the machine type API, sorted
+by id. A versioned machine type whose alias QEMU offers (C<czam-v1>, alias C<czam>) is a version
+of the alias: its C<type> is the alias and its C<version> the suffix (C<v1>), so the versions of
+C<czam> are its versioned machine types, as C<pc-q35-10.0+pve1> is a version of C<q35>. The alias
+itself and machine types without one are their own type, with the QEMU version.
+
+=cut
+
+sub s390x_mainframe_machine_entries {
+    my ($kvm_binary) = @_;
+
+    my $types = s390x_mainframe_machine_types($kvm_binary);
+    my $qemu_version = PVE::QemuServer::Helpers::kvm_user_version($kvm_binary);
+    $qemu_version =~ s/^(\d+\.\d+).*$/$1/;
+
+    my $alias_of = {};
+    for my $id (keys %$types) {
+        my ($target) = $types->{$id} =~ m/\(alias of ([^)\s]+)\)/ or next;
+        $alias_of->{$target} = $id if defined($types->{$target});
+    }
+
+    my $entries = [];
+    for my $id (sort keys %$types) {
+        my ($type, $version) = ($id, $qemu_version);
+        # the other versions of an alias' family too (czam-v1 while the alias points to czam-v2)
+        my ($family) = grep { $id =~ m/^\Q$_\E-(v\d+)$/ } values %$alias_of;
+        if (defined($family)) {
+            ($version) = $id =~ m/^\Q$family\E-(v\d+)$/;
+            $type = $family;
+        }
+        push @$entries,
+            {
+                id => $id,
+                type => $type,
+                version => $version,
+                class => 'mainframe',
+                description => $types->{$id},
+            };
+    }
+    return $entries;
 }
 
 =head3 default_new_machine_for_arch

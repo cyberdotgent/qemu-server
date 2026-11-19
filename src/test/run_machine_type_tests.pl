@@ -129,6 +129,27 @@ is(
     'czam',
     'new s390x VMs get the alias of the newest version of a versioned mainframe machine type',
 );
+# the machine type API: czam-v1 is a version of czam, not a type of its own
+is_deeply(
+    PVE::QemuServer::Machine::s390x_mainframe_machine_entries('/usr/bin/kvm'),
+    [
+        {
+            id => 'czam',
+            type => 'czam',
+            version => '11.1',
+            class => 'mainframe',
+            description => 'CZAM hardware mode (version 1) (alias of czam-v1)',
+        },
+        {
+            id => 'czam-v1',
+            type => 'czam',
+            version => 'v1',
+            class => 'mainframe',
+            description => 'CZAM hardware mode (version 1)',
+        },
+    ],
+    'machine type API entries: the versions of a mainframe machine type have the alias as type',
+);
 is(
     PVE::QemuServer::Machine::s390x_machine_class('aaa-old'),
     'mainframe',
@@ -151,5 +172,28 @@ is(
     'new s390x VMs get the virtio machine without a mainframe machine type',
 );
 is(PVE::QemuServer::Machine::default_new_machine_for_arch('x86_64'), 'pc', 'x86_64 default');
+
+# change notes of +pveX revisions only where they change something for the architecture
+is(
+    PVE::QemuServer::Machine::machine_revision_changes('11.0', '+pve2', 'x86_64'),
+    'Enable hv_emcs for Windows 11/2022/2025 to mitigate issues with VBS.',
+    'hv_emcs note on x86_64',
+);
+is(PVE::QemuServer::Machine::machine_revision_changes('11.0', '+pve2', 's390x'), undef,
+    'no hv_emcs note on s390x');
+is(PVE::QemuServer::Machine::machine_revision_changes('9.2', '+pve1', 'aarch64'), undef,
+    'no S3/S4 note on aarch64');
+like(PVE::QemuServer::Machine::machine_revision_changes('11.0', '+pve1', 's390x'), qr/host_tunnel/,
+    'VirtIO NIC note on s390x');
+is(PVE::QemuServer::Machine::machine_revision_changes('11.0', '+pve9', 's390x'), undef,
+    'unknown revision');
+for my $key (keys $PVE::QemuServer::Machine::PVE_MACHINE_REVISION_ARCHES->%*) {
+    my ($version, $revision) = $key =~ m/^(\d+\.\d+)(\+pve\d+)$/;
+    ok(
+        defined($version)
+            && defined($PVE::QemuServer::Machine::PVE_MACHINE_VERSION->{$version}->{revisions}->{$revision}),
+        "architectures of $key: a known revision",
+    );
+}
 
 done_testing();
