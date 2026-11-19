@@ -229,4 +229,45 @@ is_deeply(
 ok(PVE::QemuServer::Netboot::is_once($conf), 'boots once by default');
 ok(!PVE::QemuServer::Netboot::is_once({ netboot => "$conf->{netboot},once=0" }), 'once=0');
 
+# migration: refused while the target would start from local snippets
+{
+    $storage_module->mock(
+        storage_config => sub {
+            my ($cfg, $storeid) = @_;
+            return { shared => $storeid eq 'cephfs' ? 1 : 0, content => { snippets => 1 } };
+        },
+    );
+    my $local = "url=https://example.com/os/generic.ins,kernel=local:snippets/k,initrd=local:snippets/i";
+    my $shared = "url=https://example.com/os/generic.ins,kernel=cephfs:snippets/k,initrd=cephfs:snippets/i";
+    my $blocker = sub { PVE::QemuServer::Netboot::migration_blocker({}, @_) };
+
+    is($blocker->({}), undef, 'no network boot');
+    like(
+        $blocker->({ netboot => "$local,once=0" }),
+        qr/^can't migrate VM with the persistent network boot \(once=0\): local:snippets\/k, local:snippets\/i not on a shared storage - remove 'netboot'/,
+        'persistent network boot on local snippets',
+    );
+    like(
+        $blocker->({ netboot => $local }),
+        qr/^can't migrate VM with the network boot, which the next start uses,/,
+        'unused network boot on local snippets',
+    );
+    is(
+        $blocker->({ netboot => $local, pending => { delete => 'netboot,netboot-cmdline' } }),
+        undef,
+        'used network boot (pending deletion) is not needed',
+    );
+    is(
+        $blocker->({ netboot => $local, pending => { delete => '!netboot' } }),
+        undef,
+        'forced pending deletion',
+    );
+    is($blocker->({ netboot => "$shared,once=0" }), undef, 'shared snippets');
+    like(
+        PVE::QemuServer::Netboot::migration_blocker({}, { netboot => "$shared,once=0" }, 1),
+        qr/would not exist on the remote target/,
+        'remote migration: shared snippets are not there either',
+    );
+}
+
 done_testing();

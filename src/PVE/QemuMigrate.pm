@@ -42,6 +42,7 @@ use PVE::QemuServer::Helpers qw(min_version);
 use PVE::QemuServer::Machine;
 use PVE::QemuServer::Monitor qw(mon_cmd vm_qmp_peer);
 use PVE::QemuServer::Memory qw(get_current_memory);
+use PVE::QemuServer::Netboot;
 use PVE::QemuServer::Network;
 use PVE::QemuServer::QMPHelpers;
 use PVE::QemuServer::DBusVMState;
@@ -574,6 +575,14 @@ sub scan_local_volumes {
             } else {
                 $self->log('info', "found $type disk '$vol'\n");
             }
+        }
+
+        # s390x: the target starts the VM from the files of a network boot, which a migration
+        # does not copy
+        if (my $err = PVE::QemuServer::Netboot::migration_blocker(
+            $storecfg, $conf, $self->{opts}->{remote},
+        )) {
+            &$log_error($err);
         }
 
         foreach my $vol (sort keys %$local_volumes_errors) {

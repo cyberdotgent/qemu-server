@@ -1846,6 +1846,43 @@ my $tests = [
         },
     },
     {
+        # s390x: a persistent network boot needs its files on the target
+        name => '300_running_netboot_persistent_local',
+        target => 'pve1',
+        vmid => 300,
+        vm_status => {
+            running => 1,
+            runningmachine => 's390-ccw-virtio-11.0+pve0',
+        },
+        opts => {
+            online => 1,
+            'with-local-disks' => 1,
+        },
+        config_patch => {
+            netboot => 'https://example.com/generic.ins,'
+                . 'kernel=local:snippets/netboot-0123456789ab.kernel,once=0',
+        },
+        expected_calls => {},
+        expect_die => "can't migrate VM with the persistent network boot (once=0):"
+            . " local:snippets/netboot-0123456789ab.kernel not on a shared storage",
+        expected => {
+            source_volids => local_volids_for_vm(300),
+            target_volids => {},
+            vm_config => get_patched_config(
+                300,
+                {
+                    netboot => 'https://example.com/generic.ins,'
+                        . 'kernel=local:snippets/netboot-0123456789ab.kernel,once=0',
+                    pending => {},
+                },
+            ),
+            vm_status => {
+                running => 1,
+                runningmachine => 's390-ccw-virtio-11.0+pve0',
+            },
+        },
+    },
+    {
         # s390x: a network boot that was used (pending deletion) is not needed on the target
         name => '300_running_netboot_used',
         target => 'pve1',

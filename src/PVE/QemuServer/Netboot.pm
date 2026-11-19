@@ -340,4 +340,31 @@ sub is_once {
     return $netboot->{once} // 1;
 }
 
+# Why a VM with a network boot cannot be migrated, or undef. The target starts the VM with the
+# kernel and initial RAM disk of the network boot (also a live migration target), unless the network
+# boot was used and is pending deletion. Snippets on a storage that is not shared are not there,
+# and a migration does not copy them; a remote migration never has them.
+sub migration_blocker {
+    my ($storecfg, $conf, $remote) = @_;
+
+    return undef if !$conf->{netboot};
+    # pending deletion, as PVE::AbstractConfig::parse_pending_delete() (a '!' forces it)
+    return undef
+        if grep { s/^!//r eq 'netboot' } split(/[,;\s]+/, $conf->{pending}->{delete} // '');
+
+    my @local;
+    for my $volid (get_volumes($conf)->@*) {
+        my ($sid) = PVE::Storage::parse_volume_id($volid, 1);
+        my $scfg = $sid ? PVE::Storage::storage_config($storecfg, $sid, 1) : undef;
+        push @local, $volid if $remote || !$scfg || !$scfg->{shared};
+    }
+    return undef if !@local;
+
+    my $what = (is_once($conf) ? "the network boot, which the next start uses,"
+        : "the persistent network boot (once=0)");
+    return "can't migrate VM with $what: " . join(', ', @local)
+        . ($remote ? " would not exist on the remote target" : " not on a shared storage")
+        . " - remove 'netboot', or fetch it into a shared storage ('storage' of 'netboot')\n";
+}
+
 1;
