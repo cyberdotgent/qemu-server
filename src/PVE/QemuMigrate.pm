@@ -34,6 +34,7 @@ use PVE::QemuServer::Agent;
 use PVE::QemuServer::BlockJob;
 use PVE::QemuServer::CPUConfig;
 use PVE::QemuServer::Console3270;
+use PVE::QemuServer::DASD;
 use PVE::QemuServer::Drive qw(checked_volume_format update_tpmstate_size);
 use PVE::QemuServer::Helpers qw(min_version);
 use PVE::QemuServer::Machine;
@@ -935,6 +936,13 @@ sub phase1_remote {
                 storage => $targetsid,
                 drive => $drive,
             };
+            # the new volume of a CKD DASD needs its header before the target starts
+            if ($ds =~ m/^ckd\d+$/) {
+                my $header = PVE::QemuServer::DASD::ckd_volume_header_for_migration(
+                    $self->{storecfg}, $volid,
+                );
+                $params->{'ckd-header'} = unpack('H*', $header);
+            }
 
             $self->log(
                 'info',
@@ -1065,6 +1073,15 @@ sub phase2_start_local_cluster {
     my @online_replicated_volumes = $self->filter_local_volumes('online', 1);
     foreach my $volid (@online_replicated_volumes) {
         $input .= "replicated_volume: $volid\n";
+    }
+
+    # the new volumes of CKD DASDs need their header before the target starts
+    for my $volid ($self->filter_local_volumes('online', 0)) {
+        my $drivename = $local_volumes->{$volid}->{drivename};
+        next if !$drivename || $drivename !~ m/^ckd\d+$/;
+        my $header =
+            PVE::QemuServer::DASD::ckd_volume_header_for_migration($self->{storecfg}, $volid);
+        $input .= "ckd_header: $drivename: " . unpack('H*', $header) . "\n";
     }
 
     my $handle_storage_migration_listens = sub {

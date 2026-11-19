@@ -249,7 +249,7 @@ is($@, '', 'CKD allows offline operations');
 
 # header I/O with the real tools, if installed
 SKIP: {
-    skip 'qemu-img/qemu-io not installed', 25 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
+    skip 'qemu-img/qemu-io not installed', 33 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
 
     my $dir = tempdir(CLEANUP => 1);
     for my $format (qw(raw qcow2)) {
@@ -353,6 +353,35 @@ SKIP: {
         );
     };
     like($@, qr/too small for 1113 cylinders/, 'import destination too small');
+
+    # live migration with storage migration: the header of the source volume (Hercules form here)
+    # for the new, larger volume on the target
+    truncate($vol, 0);
+    truncate($vol, 512 + 1113 * $cyl);
+    PVE::QemuServer::DASD::write_image_head($vol, 'raw', $hercules);
+    my $migration_header = PVE::QemuServer::DASD::ckd_volume_header_for_migration({}, 'x');
+    is(length($migration_header), 512, 'migration: header length');
+    is($parse->($migration_header, 10**12)->{'high-cylinder'}, 1113, 'migration: cylinder count');
+    is(substr($migration_header, 20, 12), '876955967561', 'migration: serial kept');
+    truncate($vol, 0);
+    truncate($vol, 512 + 1113 * $cyl + 4 * 1024 * 1024);
+    my $target = PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $migration_header);
+    is($target->{cylinders}, 1113, 'migration: new volume initialized');
+    is(
+        PVE::QemuServer::DASD::read_image_head($vol, 'raw'),
+        $migration_header,
+        'migration: header of the source on the new volume',
+    );
+    is(
+        PVE::QemuServer::DASD::ckd_volume_header_for_migration({}, 'x'),
+        $migration_header,
+        'migration: header with cylinder count taken as is',
+    );
+    truncate($vol, 512 + 1000 * $cyl);
+    eval { PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $migration_header) };
+    like($@, qr/too short for 1113 cylinders/, 'migration: new volume too small');
+    eval { PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $hercules) };
+    like($@, qr/no cylinder count/, 'migration: header without cylinder count refused');
 }
 
 done_testing();

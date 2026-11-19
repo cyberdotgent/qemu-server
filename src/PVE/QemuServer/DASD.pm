@@ -141,9 +141,10 @@ sub parse_ckd_header {
     };
 }
 
-# Read the first 512 bytes of an image with qemu-img (any format and protocol).
+# Read the first 512 bytes of an image with qemu-img (any format and protocol). $force_share for
+# an image a running VM has open.
 sub read_image_head {
-    my ($path, $format) = @_;
+    my ($path, $format, $force_share) = @_;
 
     my $dir = File::Temp->newdir('/tmp/pve-dasd-XXXXXX');
     my $out = "$dir/head";
@@ -151,6 +152,7 @@ sub read_image_head {
         [
             '/usr/bin/qemu-img',
             'dd',
+            ($force_share ? '-U' : ()),
             '-f',
             $format,
             '-O',
@@ -229,6 +231,40 @@ sub check_ckd_volume {
         );
         $header->{'high-cylinder'} = $header->{cylinders};
     }
+
+    return $header;
+}
+
+# The header of the CKD volume of a running VM, for its migration target (see
+# init_ckd_volume_from_header()), with the cylinder count in it: the target volume may be larger.
+sub ckd_volume_header_for_migration {
+    my ($storecfg, $volid) = @_;
+
+    my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
+    my $data = read_image_head($path, $format, 1);
+    my $header = eval { parse_ckd_header($data, $size) };
+    die "volume '$volid': $@" if $@;
+
+    return substr($data, 0, CKD_HEADER_SIZE) if $header->{'high-cylinder'} == $header->{cylinders};
+    return ckd_header($header->{cylinders}, $header->{serial}, $header->{identifier});
+}
+
+# Write the header of the CKD volume of a migrating VM (see ckd_volume_header_for_migration())
+# into its new, empty volume on the target. The eckd-ccw device of the target needs it to start,
+# the storage migration then copies the whole volume, the same header included. Returns the
+# parsed header.
+sub init_ckd_volume_from_header {
+    my ($storecfg, $volid, $data) = @_;
+
+    die "internal error: CKD header must be " . CKD_HEADER_SIZE . " bytes\n"
+        if length($data) != CKD_HEADER_SIZE;
+
+    my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
+    my $header = eval { parse_ckd_header($data, $size) };
+    die "volume '$volid': $@" if $@;
+    die "volume '$volid': the CKD header has no cylinder count\n"
+        if $header->{'high-cylinder'} != $header->{cylinders};
+    write_image_head($path, $format, $data);
 
     return $header;
 }

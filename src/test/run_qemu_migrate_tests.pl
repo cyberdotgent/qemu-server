@@ -206,6 +206,16 @@ my $vm_configs = {
         'startup' => 'order=2',
         'vmgenid' => '36c6c50c-6ef5-4adc-9b6f-6ba9c8071db0',
     },
+    300 => {
+        'arch' => 's390x',
+        'boot' => 'order=ckd0',
+        'ckd0' => 'local-lvm:vm-300-SYSRS1,cylinders=1113,devno=0.0.0200,size=948863488',
+        'fba0' => 'local-dir:300/vm-300-disk-0.raw,devno=0.0.0300,size=1G',
+        'memory' => 2048,
+        'net0' => 'virtio=BC:24:11:00:03:00,bridge=vmbr0',
+        'ostype' => 'other',
+        'snapshots' => {},
+    },
     341 => {
         'arch' => 'aarch64',
         'bootdisk' => 'scsi0',
@@ -312,6 +322,15 @@ my $source_vdisks = {
     'local-dir' => [
         {
             'ctime' => 1589439681,
+            'format' => 'raw',
+            'parent' => undef,
+            'size' => 1073741824,
+            'used' => 1073741824,
+            'vmid' => '300',
+            'volid' => 'local-dir:300/vm-300-disk-0.raw',
+        },
+        {
+            'ctime' => 1589439681,
             'format' => 'qcow2',
             'parent' => undef,
             'size' => 1073741824,
@@ -348,6 +367,13 @@ my $source_vdisks = {
         },
     ],
     'local-lvm' => [
+        {
+            'ctime' => '1589277334',
+            'format' => 'raw',
+            'size' => 948863488,
+            'vmid' => '300',
+            'volid' => 'local-lvm:vm-300-SYSRS1',
+        },
         {
             'ctime' => '1589277334',
             'format' => 'raw',
@@ -1778,6 +1804,72 @@ my $tests = [
             vm_status => {
                 running => 1,
                 runningmachine => 'pc-q35-5.0+pve0',
+            },
+        },
+    },
+    {
+        # s390x: the new CKD volume gets the header of the source volume (mocked) and keeps its
+        # name, the 3270 console sessions start on the target after the config moved
+        name => '300_running_dasd',
+        target => 'pve1',
+        vmid => 300,
+        vm_status => {
+            running => 1,
+            runningmachine => 's390-ccw-virtio-11.0+pve0',
+        },
+        opts => {
+            online => 1,
+            'with-local-disks' => 1,
+        },
+        expected_calls => {
+            %{$default_expected_calls_online},
+            ssh_start_3270_sessions => 1,
+        },
+        expected => {
+            source_volids => {},
+            target_volids => {
+                'local-lvm:vm-300-SYSRS1' => 1,
+                'local-dir:300/vm-300-disk-10.raw' => 1,
+            },
+            vm_config => get_patched_config(
+                300,
+                {
+                    ckd0 => 'local-lvm:vm-300-SYSRS1,cylinders=1113,devno=0.0.0200,format=raw,'
+                        . 'size=948863488',
+                    fba0 => 'local-dir:300/vm-300-disk-10.raw,devno=0.0.0300,format=raw,size=1G',
+                },
+            ),
+            vm_status => {
+                running => 1,
+                runningmachine => 's390-ccw-virtio-11.0+pve0',
+            },
+        },
+    },
+    {
+        # the target frees the volumes it allocated if it does not start
+        name => '300_running_dasd_target_start_fail',
+        target => 'pve1',
+        vmid => 300,
+        vm_status => {
+            running => 1,
+            runningmachine => 's390-ccw-virtio-11.0+pve0',
+        },
+        opts => {
+            online => 1,
+            'with-local-disks' => 1,
+        },
+        fail_config => {
+            vm_start_nolock => 1,
+        },
+        expected_calls => {},
+        expect_die => "remote command failed with exit code",
+        expected => {
+            source_volids => local_volids_for_vm(300),
+            target_volids => {},
+            vm_config => $vm_configs->{300},
+            vm_status => {
+                running => 1,
+                runningmachine => 's390-ccw-virtio-11.0+pve0',
             },
         },
     },

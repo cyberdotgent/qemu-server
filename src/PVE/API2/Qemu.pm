@@ -4449,6 +4449,7 @@ __PACKAGE__->register_method({
         my $nbd_protocol_version = 0;
         my $replicated_volumes = {};
         my $offline_volumes = {};
+        my $ckd_headers = {};
         if (
             $stateuri
             && ($stateuri eq 'tcp' || $stateuri eq 'unix')
@@ -4468,6 +4469,9 @@ __PACKAGE__->register_method({
                     $offline_volumes->{tpmstate0} = $1;
                 } elsif ($line =~ m/^offline_volume: ([^:]+): (.*)$/) {
                     $offline_volumes->{$1} = $2;
+                } elsif ($line =~ m/^ckd_header: (ckd\d+): ([0-9a-f]{1024})$/) {
+                    # the header of a CKD volume to migrate, for its new volume
+                    $ckd_headers->{$1} = pack('H*', $2);
                 } elsif (!$spice_ticket) {
                     # fallback for old source node
                     $spice_ticket = $line;
@@ -4510,6 +4514,7 @@ __PACKAGE__->register_method({
                     nbd_proto_version => $nbd_protocol_version,
                     replicated_volumes => $replicated_volumes,
                     offline_volumes => $offline_volumes,
+                    ckd_headers => $ckd_headers,
                     with_conntrack_state => $with_conntrack_state,
                 };
 
@@ -7713,6 +7718,13 @@ __PACKAGE__->register_method({
                         type => 'object',
                         description => 'parsed drive information without volid and format',
                     },
+                    'ckd-header' => {
+                        type => 'string',
+                        pattern => '[0-9a-f]{1024}',
+                        description => 'The header of the source volume of a CKD DASD, hex'
+                            . ' encoded, for the new volume.',
+                        optional => 1,
+                    },
                 },
                 start => {
                     start_params => {
@@ -7944,8 +7956,13 @@ __PACKAGE__->register_method({
                         ],
                     };
 
+                    my $ckd_headers = {};
+                    $ckd_headers->{disk} = pack('H*', $params->{'ckd-header'})
+                        if defined($params->{'ckd-header'});
+
                     my $res = PVE::QemuServer::vm_migrate_alloc_nbd_disks(
                         $state->{storecfg}, $state->{vmid}, $source_volumes, $storagemap,
+                        $ckd_headers,
                     );
                     if (defined($res->{disk})) {
                         my $volid = $res->{disk}->{volid};

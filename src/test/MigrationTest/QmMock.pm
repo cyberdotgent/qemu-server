@@ -9,6 +9,7 @@ use Test::MockModule;
 use MigrationTest::Shared;
 
 use PVE::API2::Qemu;
+use PVE::QemuServer::DASD;
 use PVE::Storage;
 use PVE::Tools qw(file_set_contents file_get_contents);
 
@@ -112,18 +113,22 @@ $MigrationTest::Shared::storage_module->mock(
     vdisk_alloc => sub {
         my ($cfg, $storeid, $vmid, $fmt, $name, $size) = @_;
 
-        die "vdisk_alloc (mocked) - name is not expected to be set - implement me\n"
-            if defined($name);
-
-        my $name_without_extension = "vm-${vmid}-disk-${disk_counter}";
-        $disk_counter++;
-
         my $volid;
         my $scfg = PVE::Storage::storage_config($cfg, $storeid);
-        if ($scfg->{path}) {
-            $volid = "${storeid}:${vmid}/${name_without_extension}.${fmt}";
+        if (defined($name)) {
+            # the user given names of s390x DASD volumes
+            die "vdisk_alloc (mocked) - unexpected name '$name'\n"
+                if $name !~ m/^vm-\Q$vmid\E-[A-Z0-9]+(?:\.$fmt)?$/;
+            $volid = $scfg->{path} ? "${storeid}:${vmid}/${name}" : "${storeid}:${name}";
         } else {
-            $volid = "${storeid}:${name_without_extension}";
+            my $name_without_extension = "vm-${vmid}-disk-${disk_counter}";
+            $disk_counter++;
+
+            if ($scfg->{path}) {
+                $volid = "${storeid}:${vmid}/${name_without_extension}.${fmt}";
+            } else {
+                $volid = "${storeid}:${name_without_extension}";
+            }
         }
 
         PVE::Storage::parse_volume_id($volid);
@@ -135,6 +140,25 @@ $MigrationTest::Shared::storage_module->mock(
         MigrationTest::Shared::add_target_volid($volid);
 
         return $volid;
+    },
+    vdisk_free => sub {
+        my ($cfg, $volid) = @_;
+        # the target frees new volumes itself if it fails, like the source with 'pvesm free'
+        die "vdisk_free '$volid' error\n"
+            if $fail_config->{pvesm_free} && $fail_config->{pvesm_free} eq $volid;
+        MigrationTest::Shared::remove_target_volid($volid);
+    },
+);
+
+# the new volumes of CKD DASDs get the header of the source volume
+my $dasd_module = Test::MockModule->new("PVE::QemuServer::DASD");
+$dasd_module->mock(
+    init_ckd_volume_from_header => sub {
+        my ($storecfg, $volid, $data) = @_;
+        my $header = PVE::QemuServer::DASD::parse_ckd_header($data, 2**40);
+        die "init_ckd_volume_from_header (mocked) - unexpected header\n"
+            if $header->{cylinders} != 1113 || $header->{serial} ne '000000000300';
+        return $header;
     },
 );
 
@@ -172,6 +196,7 @@ $MigrationTest::Shared::qemu_server_module->mock(
         my ($storecfg, $vmid, $conf, $params, $migrate_opts) = @_;
         $forcemachine = $params->{forcemachine}
             or die "mocked vm_start_nolock - expected 'forcemachine' parameter\n";
+        die "vm_start_nolock (mocked) - target start failed\n" if $fail_config->{vm_start_nolock};
         $MigrationTest::Shared::qemu_server_module->original('vm_start_nolock')->(@_);
     },
 );

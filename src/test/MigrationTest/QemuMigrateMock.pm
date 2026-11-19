@@ -9,6 +9,7 @@ use Test::MockModule;
 use MigrationTest::Shared;
 
 use PVE::API2::Qemu;
+use PVE::QemuServer::DASD;
 use PVE::QemuServer::Drive;
 use PVE::Storage;
 use PVE::Tools qw(file_set_contents file_get_contents);
@@ -42,6 +43,16 @@ $MigrationTest::Shared::cluster_module->mock(
         my ($node) = @_;
         my $old_node = $fail_config->{node_pvecfg_version_at_least};
         return defined($old_node) && $node eq $old_node ? 0 : 1;
+    },
+);
+
+# the header of the CKD volumes of s390x VMs, the source reads it from the running VM's volume
+my $dasd_module = Test::MockModule->new("PVE::QemuServer::DASD");
+$dasd_module->mock(
+    ckd_volume_header_for_migration => sub {
+        my ($storecfg, $volid) = @_;
+        PVE::Storage::parse_volume_id($volid);
+        return PVE::QemuServer::DASD::ckd_header(1113, '000000000300');
     },
 );
 

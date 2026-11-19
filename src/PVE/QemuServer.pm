@@ -75,6 +75,7 @@ use PVE::QemuServer::CPUConfig qw(
     get_cvm_type
 );
 use PVE::QemuServer::CPUFlags;
+use PVE::QemuServer::DASD;
 use PVE::QemuServer::Drive qw(
     is_valid_drivename
     checked_volume_format
@@ -5701,35 +5702,91 @@ sub vm_migrate_get_nbd_disks {
 }
 
 # called in locked context by incoming migration
+# The user given name of a DASD volume (see PVE::QemuServer::DASD::dasd_volume_name()), for
+# example its VOLSER, or undef for a volume named by the storage (vm-<vmid>-disk-<n>).
+my sub dasd_name_of_volume {
+    my ($storecfg, $vmid, $volid) = @_;
+
+    return if !defined($volid);
+    my $volname = eval { (PVE::Storage::parse_volname($storecfg, $volid))[1] } // return;
+    my ($name) =
+        $volname =~ m/^vm-\Q$vmid\E-([A-Za-z0-9][A-Za-z0-9_-]{0,39})(?:\.(?:raw|qcow2|vmdk))?$/
+        or return;
+    return if $name =~ m/^disk-\d+$/ || $name eq 'cloudinit';
+    return $name;
+}
+
+# $ckd_headers: { <drive key> => <CKD header of the source volume> } for the CKD DASDs, see
+# PVE::QemuServer::DASD::ckd_volume_header_for_migration()
 sub vm_migrate_alloc_nbd_disks {
-    my ($storecfg, $vmid, $source_volumes, $storagemap) = @_;
+    my ($storecfg, $vmid, $source_volumes, $storagemap, $ckd_headers) = @_;
 
     my $nbd = {};
-    foreach my $opt (sort keys %$source_volumes) {
-        my ($volid, $storeid, $drive, $use_existing, $format) = @{ $source_volumes->{$opt} };
+    my $allocated = [];
+    eval {
+        foreach my $opt (sort keys %$source_volumes) {
+            my ($volid, $storeid, $drive, $use_existing, $format) =
+                @{ $source_volumes->{$opt} };
 
-        if ($use_existing) {
-            $nbd->{$opt}->{drivestr} = print_drive($drive);
-            $nbd->{$opt}->{volid} = $volid;
-            $nbd->{$opt}->{replicated} = 1;
-            next;
+            if ($use_existing) {
+                $nbd->{$opt}->{drivestr} = print_drive($drive);
+                $nbd->{$opt}->{volid} = $volid;
+                $nbd->{$opt}->{replicated} = 1;
+                next;
+            }
+
+            $storeid = PVE::JSONSchema::map_id($storagemap, $storeid);
+
+            # order of precedence, filtered by whether storage supports it:
+            # 1. explicit requested format
+            # 2. default format of storage
+            $format = PVE::Storage::resolve_format_hint($storecfg, $storeid, $format);
+
+            my $is_ckd = ($drive->{interface} // '') eq 'ckd';
+            my $ckd_header = $is_ckd ? ($ckd_headers // {})->{$opt} : undef;
+            die "$opt: the source node did not send the header of the CKD volume, update it\n"
+                if $is_ckd && !defined($ckd_header);
+
+            my $size = $drive->{size} / 1024;
+
+            # DASDs keep their user given volume names, if still free on the target storage
+            my $newvolid;
+            if (PVE::QemuServer::Drive::drive_is_dasd($drive)) {
+                if (defined(my $name = dasd_name_of_volume($storecfg, $vmid, $volid))) {
+                    my $volname = PVE::QemuServer::DASD::dasd_volume_name(
+                        $storecfg, $storeid, $vmid, $format, $name,
+                    );
+                    $newvolid = eval {
+                        PVE::Storage::vdisk_alloc(
+                            $storecfg, $storeid, $vmid, $format, $volname, $size,
+                        );
+                    };
+                    warn "$opt: could not allocate volume '$volname', using another name - $@"
+                        if $@;
+                }
+            }
+            $newvolid //=
+                PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, $format, undef, $size);
+            push @$allocated, $newvolid;
+
+            # the eckd-ccw device needs the header to start
+            PVE::QemuServer::DASD::init_ckd_volume_from_header($storecfg, $newvolid, $ckd_header)
+                if $is_ckd;
+
+            my $newdrive = $drive;
+            $newdrive->{format} = $format;
+            $newdrive->{file} = $newvolid;
+            my $drivestr = print_drive($newdrive);
+            $nbd->{$opt}->{drivestr} = $drivestr;
+            $nbd->{$opt}->{volid} = $newvolid;
         }
-
-        $storeid = PVE::JSONSchema::map_id($storagemap, $storeid);
-
-        # order of precedence, filtered by whether storage supports it:
-        # 1. explicit requested format
-        # 2. default format of storage
-        $format = PVE::Storage::resolve_format_hint($storecfg, $storeid, $format);
-
-        my $size = $drive->{size} / 1024;
-        my $newvolid = PVE::Storage::vdisk_alloc($storecfg, $storeid, $vmid, $format, undef, $size);
-        my $newdrive = $drive;
-        $newdrive->{format} = $format;
-        $newdrive->{file} = $newvolid;
-        my $drivestr = print_drive($newdrive);
-        $nbd->{$opt}->{drivestr} = $drivestr;
-        $nbd->{$opt}->{volid} = $newvolid;
+    };
+    if (my $err = $@) {
+        for my $volid (@$allocated) {
+            eval { PVE::Storage::vdisk_free($storecfg, $volid) };
+            warn "could not free volume '$volid' - $@" if $@;
+        }
+        die $err;
     }
 
     return $nbd;
@@ -5835,18 +5892,35 @@ sub vm_start {
 
             die "VM $vmid already running\n" if $running;
 
+            my $new_volids = [];
             if (my $storagemap = $migrate_opts->{storagemap}) {
                 my $replicated = $migrate_opts->{replicated_volumes};
                 my $disks = vm_migrate_get_nbd_disks($storecfg, $conf, $replicated);
-                $migrate_opts->{nbd} =
-                    vm_migrate_alloc_nbd_disks($storecfg, $vmid, $disks, $storagemap);
+                $migrate_opts->{nbd} = vm_migrate_alloc_nbd_disks(
+                    $storecfg, $vmid, $disks, $storagemap, $migrate_opts->{ckd_headers},
+                );
 
                 foreach my $opt (keys %{ $migrate_opts->{nbd} }) {
-                    $conf->{$opt} = $migrate_opts->{nbd}->{$opt}->{drivestr};
+                    my $nbd = $migrate_opts->{nbd}->{$opt};
+                    $conf->{$opt} = $nbd->{drivestr};
+                    push @$new_volids, $nbd->{volid} if !$nbd->{replicated};
                 }
             }
 
-            return vm_start_nolock($storecfg, $vmid, $conf, $params, $migrate_opts);
+            my $res = eval { vm_start_nolock($storecfg, $vmid, $conf, $params, $migrate_opts) };
+            if (my $err = $@) {
+                # the source only knows the volumes of the storage migration once the target
+                # started, free those of a target that did not
+                if (scalar(@$new_volids) && !PVE::QemuServer::Helpers::vm_running_locally($vmid)) {
+                    for my $volid (@$new_volids) {
+                        print "freeing new volume '$volid' of the failed migration\n";
+                        eval { PVE::Storage::vdisk_free($storecfg, $volid) };
+                        warn "could not free volume '$volid' - $@" if $@;
+                    }
+                }
+                die $err;
+            }
+            return $res;
         },
     );
 }
