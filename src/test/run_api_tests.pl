@@ -858,9 +858,9 @@ subtest 's390x methods run privileged' => sub {
     }
 };
 
-# The import working storage when none is given: the source storage if it can hold
-# images (upstream), else the target storage if file based with 'images', else the first such
-# storage of the node.
+# The import working storage when none is given: the source storage if it can be
+# one (file based; for a live import also 'images', upstream), else the target storage if it can,
+# else the first such storage of the node.
 subtest 'default import working storage' => sub {
     my $ids = {
         local => { type => 'dir', path => '/var/lib/vz', content => { import => 1, iso => 1 } },
@@ -868,6 +868,7 @@ subtest 'default import working storage' => sub {
         images => { type => 'dir', path => '/srv/images', content => { images => 1 } },
         imports => { type => 'dir', path => '/srv/imp', content => { import => 1, images => 1 } },
         zdir => { type => 'dir', path => '/z', content => { images => 1 }, disable => 1 },
+        esxi => { type => 'esxi', content => { import => 1 } },
     };
     my $storecfg = { ids => $ids };
     my $storage = Test::MockModule->new('PVE::Storage');
@@ -885,13 +886,13 @@ subtest 'default import working storage' => sub {
         },
     );
     my $resolve = sub {
-        my ($settings, $default, $given) = @_;
+        my ($settings, $default, $given, $live) = @_;
         my $res;
         my $out = '';
         open(my $fh, '>', \$out);
         my $old = select($fh);
         eval { $res = PVE::API2::Qemu::default_import_working_storage(
-            $storecfg, $settings, $default, $given) };
+            $storecfg, $settings, $default, $given, $live) };
         my $err = $@;
         select($old);
         close($fh);
@@ -900,31 +901,44 @@ subtest 'default import working storage' => sub {
     };
     my $ova = 'local:import/x.ova/disk.vmdk';
 
+    ok(PVE::API2::Qemu::is_import_working_storage($ids->{local}), 'dir without images: plain');
+    ok(!PVE::API2::Qemu::is_import_working_storage($ids->{local}, 1), 'dir without images: live');
+    ok(PVE::API2::Qemu::is_import_working_storage($ids->{images}, 1), 'dir with images: live');
+    ok(!PVE::API2::Qemu::is_import_working_storage($ids->{'local-zfs'}), 'zfspool: no');
+    ok(!PVE::API2::Qemu::is_import_working_storage(undef), 'unknown storage: no');
+
     is($resolve->({ ckd0 => "images:0,import-from=$ova" }, undef, 'zdir'), 'zdir', 'given: kept');
+    is($resolve->({ ckd0 => "local-zfs:0,import-from=$ova" }), undef,
+        'plain import: the file based source storage without images (installer layout)');
     is(
-        $resolve->({ ckd0 => "local-zfs:0,import-from=imports:import/x.ova/disk.vmdk" }),
+        $resolve->({ ckd0 => "local-zfs:0,import-from=imports:import/x.ova/disk.vmdk" }, undef,
+            undef, 1),
         undef,
-        'source storage holds images: upstream (source storage)',
+        'live: source storage holds images: upstream (source storage)',
     );
     is($resolve->({ ckd0 => 'local-zfs:0,import-from=local-zfs:vm-1-disk-0' }), undef,
         'no extraction needed');
-    my ($res, $out) = $resolve->({ ckd0 => "images:0,import-from=$ova" });
-    is($res, 'images', 'target storage');
+    my ($res, $out) = $resolve->({ ckd0 => "images:0,import-from=$ova" }, undef, undef, 1);
+    is($res, 'images', 'live: target storage');
     like($out, qr/using the target storage 'images'/, 'target storage logged');
-    ($res, $out) = $resolve->({ ckd0 => "local-zfs:0,import-from=$ova" });
-    is($res, 'images', 'first file based images storage of the node (enabled, sorted)');
-    like($out, qr/using storage 'images' as import working storage, neither the source nor the target storage of 'ckd0'/,
+    ($res, $out) = $resolve->({ ckd0 => "local-zfs:0,import-from=$ova" }, undef, undef, 1);
+    is($res, 'images', 'live: first file based images storage of the node (enabled, sorted)');
+    like($out, qr/using storage 'images' as import working storage, neither the source nor the target storage of 'ckd0' can be one/,
         'fallback logged');
+    ($res, $out) = $resolve->({ ckd0 => "local-zfs:0,import-from=esxi:import/x.ova/disk.vmdk" });
+    is($res, 'images', 'plain, source not file based: first file based storage of the node');
 
     my $saved = { %$ids };
     delete $ids->{$_} for qw(images imports);
-    eval { $resolve->({ ckd0 => "local-zfs:0,import-from=$ova" }) };
+    eval { $resolve->({ ckd0 => "local-zfs:0,import-from=$ova" }, undef, undef, 1) };
     my $err = $@;
     like(
         ref($err) ? $err->{errors}->{'import-working-storage'} : $err,
-        qr/must be extracted to a file based storage with 'images' content, and this node has none/,
-        'none: clear hint',
+        qr/must be extracted to a file based storage with 'images' content, and this node has none: import without live import/,
+        'live, none: clear hint',
     );
+    is($resolve->({ ckd0 => "local-zfs:0,import-from=$ova" }), undef,
+        'plain, no images storage at all: source storage');
     %$ids = %$saved;
 };
 

@@ -9,6 +9,7 @@ use v5.36;
 use lib qw(..);
 
 use Digest::SHA;
+use File::Path;
 use File::Temp qw(tempdir);
 use Test::MockModule;
 use Test::More;
@@ -17,6 +18,7 @@ use XML::LibXML;
 use PVE::Tools qw(run_command);
 
 use PVE::QemuServer::DASD;
+use PVE::QemuServer::ImportDisk;
 use PVE::QemuServer::OVA;
 use PVE::QemuServer::Tape;
 
@@ -494,6 +496,71 @@ SKIP: {
             . "ckd0: transferred 1.0 GiB of 1.0 GiB (100.00%)\n",
         'export progress lines',
     );
+}
+
+
+# an OVA disk image is extracted into a temporary directory on a file based working storage
+# without 'images' content, under the name of the drive
+{
+    my $dir = tempdir(CLEANUP => 1);
+    my $store = "$dir/store";
+    mkdir $store or die;
+    mkdir "$store/import" or die;
+    PVE::Tools::file_set_contents("$dir/vm-300-disk-0.vmdk", 'disk image');
+    run_command(['tar', '-c', '-f', "$store/import/x.ova", '-C', $dir, 'vm-300-disk-0.vmdk']);
+
+    my $ids = {
+        local => { type => 'dir', path => $store, content => { import => 1, iso => 1 } },
+        'local-zfs' => { type => 'zfspool', pool => 'rpool/data', content => { images => 1 } },
+    };
+    my $checked;
+    my $storage = Test::MockModule->new('PVE::Storage');
+    $storage->mock(
+        storage_config => sub { return $ids->{ $_[1] } // die "storage '$_[1]' does not exist\n" },
+        activate_storage => sub { },
+        parse_volname => sub {
+            my ($cfg, $volid) = @_;
+            my ($name) = $volid =~ m/^[^:]+:import\/(.*)$/ or die "bad volid\n";
+            my $fmt = $name =~ m/\.aws$/ ? 'ova+aws' : 'ova+vmdk';
+            return ('import', $name, undef, undef, undef, undef, $fmt);
+        },
+        path => sub {
+            my ($cfg, $volid) = @_;
+            my ($id, $name) = $volid =~ m/^([^:]+):(.*)$/;
+            return "$ids->{$id}->{path}/$name";
+        },
+        file_size_info => sub { $checked = [@_[0, 2, 3]]; return 10 },
+    );
+
+    my ($path, $fmt, $tmp) = PVE::QemuServer::ImportDisk::extract_ova_disk(
+        {}, 'local:import/x.ova/vm-300-disk-0.vmdk', 301, 'ckd1', 'local',
+    );
+    is($tmp, "$store/.import-tmp-301-$$", 'temporary directory on the working storage');
+    is($path, "$tmp/ckd1.vmdk", 'named after the drive');
+    is($fmt, 'vmdk', 'format');
+    is(PVE::Tools::file_get_contents($path), 'disk image', 'content');
+    is_deeply($checked, [$path, 'vmdk', 1], 'checked as untrusted image');
+    File::Path::remove_tree($tmp);
+
+    eval {
+        PVE::QemuServer::ImportDisk::extract_ova_disk(
+            {}, 'local:import/x.ova/vm-300-disk-0.vmdk', 301, 'ckd1', 'local-zfs',
+        );
+    };
+    like($@, qr/import working storage 'local-zfs' is not file based/, 'zfspool refused');
+    eval {
+        PVE::QemuServer::ImportDisk::extract_ova_disk(
+            {}, 'local:import/x.ova/missing.vmdk', 301, 'ckd1', 'local',
+        );
+    };
+    like($@, qr/error during extraction/, 'missing member');
+    ok(!-e "$store/.import-tmp-301-$$", 'temporary directory removed after an error');
+    eval {
+        PVE::QemuServer::ImportDisk::extract_ova_disk(
+            {}, 'local:import/x.ova/X.aws', 301, 'ckd1', 'local',
+        );
+    };
+    like($@, qr/is a tape medium/, 'tape medium refused');
 }
 
 done_testing();

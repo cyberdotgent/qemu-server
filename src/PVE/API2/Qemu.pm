@@ -3,6 +3,7 @@ package PVE::API2::Qemu;
 use strict;
 use warnings;
 use Cwd 'abs_path';
+use File::Path;
 use Fcntl qw(F_GETFD F_SETFD FD_CLOEXEC);
 use Net::SSLeay;
 use IO::Socket::IP;
@@ -257,20 +258,25 @@ my $check_drive_param = sub {
     }
 };
 
-# Whether a storage can hold the disk images extracted from an OVA: file based with 'images'.
-my sub is_import_working_storage {
-    my ($scfg) = @_;
-    return $scfg && $scfg->{content}->{images} && $scfg->{path} ? 1 : 0;
+# Whether a storage can be the import working storage for the disk images of an OVA: it must be
+# file based. A plain import extracts each image into a temporary directory there and converts it
+# from that file, so the storage needs no 'images' content (the 'local' directory
+# storage of a node with the disk images on LVM or ZFS). A live import runs the VM on the
+# extracted image, which must then be a volume: 'images' content as well (upstream).
+sub is_import_working_storage {
+    my ($scfg, $live) = @_;
+    return 0 if !$scfg || !$scfg->{path};
+    return 0 if $live && !PVE::Storage::Common::content_allows($scfg->{content}, 'vm-vol');
+    return 1;
 }
 
 # The import working storage when none is given and the source storage of an image to extract
-# (an OVA on an 'import' storage) cannot hold the extracted image, as the 'local' storage of a
-# node with the disk images on LVM or ZFS: the target storage of the disk, if it is file based
-# with 'images', else the first enabled storage of the node that is. A given working storage, or
-# source storages that can hold the images, keep the upstream behaviour (undef: the source
-# storage).
+# (an OVA on an 'import' storage) cannot be one: the target storage of the disk if it can, else
+# the first enabled storage of the node that can. A given working storage, or source storages
+# that can be one (any file based storage for a plain import), keep the upstream behaviour
+# (undef: the source storage).
 sub default_import_working_storage {
-    my ($storecfg, $settings, $default_storage, $extraction_storage) = @_;
+    my ($storecfg, $settings, $default_storage, $extraction_storage, $live) = @_;
 
     return $extraction_storage if defined($extraction_storage);
 
@@ -286,14 +292,14 @@ sub default_import_working_storage {
             my ($vtype, $fmt) = (eval { checked_parse_volname($storecfg, $src_image) })[0, 6];
             return if !defined($vtype) || !PVE::QemuServer::Helpers::needs_extraction($vtype, $fmt);
             my $scfg = PVE::Storage::storage_config($storecfg, $storeid, 1);
-            return if is_import_working_storage($scfg);
+            return if is_import_working_storage($scfg, $live);
 
             $needed //= $ds;
             if (!defined($target) && $drive->{file} =~ $PVE::QemuServer::Drive::NEW_DISK_RE) {
                 my $target_id = $2 || $default_storage;
                 my $target_scfg =
                     $target_id ? PVE::Storage::storage_config($storecfg, $target_id, 1) : undef;
-                $target = $target_id if is_import_working_storage($target_scfg);
+                $target = $target_id if is_import_working_storage($target_scfg, $live);
             }
         },
     );
@@ -306,21 +312,31 @@ sub default_import_working_storage {
     my $node = PVE::INotify::nodename();
     for my $storeid (sort keys $storecfg->{ids}->%*) {
         my $scfg = PVE::Storage::storage_check_enabled($storecfg, $storeid, $node, 1);
-        next if !is_import_working_storage($scfg);
+        next if !is_import_working_storage($scfg, $live);
         print "using storage '$storeid' as import working storage, neither the source nor the"
-            . " target storage of '$needed' is file based with 'images' content\n";
+            . " target storage of '$needed' can be one\n";
         return $storeid;
     }
+    my $what = $live ? "a file based storage with 'images' content" : 'a file based storage';
     raise_param_exc({
-        'import-working-storage' => "the image of '$needed' must be extracted to a file based"
-            . " storage with 'images' content, and this node has none: add the 'images' content"
-            . " type to a directory storage, or pass 'import-working-storage'",
+        'import-working-storage' => "the image of '$needed' must be extracted to $what,"
+            . " and this node has none"
+            . ($live ? ": import without live import, or add the 'images' content type to a"
+                . " directory storage" : ''),
     });
 }
 
 my $check_storage_access = sub {
-    my ($rpcenv, $authuser, $storecfg, $vmid, $settings, $default_storage, $extraction_storage)
-        = @_;
+    my (
+        $rpcenv,
+        $authuser,
+        $storecfg,
+        $vmid,
+        $settings,
+        $default_storage,
+        $extraction_storage,
+        $live_import,
+    ) = @_;
 
     $foreach_volume_with_alloc->(
         $settings,
@@ -384,16 +400,15 @@ my $check_storage_access = sub {
                             defined($extraction_storage) ? 'import-working-storage' : $ds;
                         my $extraction_id = $extraction_storage // $storeid;
 
-                        if (
-                            !PVE::Storage::Common::content_allows(
-                                $extraction_scfg->{content}, 'vm-vol',
-                            )
-                            || !$extraction_scfg->{path}
-                        ) {
+                        if (!is_import_working_storage($extraction_scfg, $live_import)) {
                             raise_param_exc({
-                                $extraction_param =>
-                                    "import working storage '$extraction_id' does not support"
-                                    . " 'images' content type or is not file based.",
+                                $extraction_param => "import working storage '$extraction_id'"
+                                    . (
+                                        $live_import
+                                        ? " does not support 'images' content type or is not"
+                                        . " file based (needed for a live import)."
+                                        : " is not file based."
+                                    ),
                             });
                         }
                         $rpcenv->check(
@@ -846,6 +861,27 @@ my sub create_disks : prototype($$$$$$$$$$$) {
 
                 my ($source_storage) = PVE::Storage::parse_volume_id($source, 1);
 
+                # The disk images of an OVA: without a live import, extracted into a temporary
+                # directory on the import working storage and imported from that file,
+                # which works with any file based working storage and keeps
+                # the volume names on the target storage free. A live import extracts to a
+                # volume (upstream).
+                my ($extracted_dir, $extracted_format);
+                if ($source_storage && !$live_import) {
+                    my ($vtype, $source_format) =
+                        (checked_parse_volname($storecfg, $source))[0, 6];
+                    if (PVE::QemuServer::Helpers::needs_extraction($vtype, $source_format)) {
+                        my $working_storage = $extraction_storage // $source_storage;
+                        print "extracting $source to storage '$working_storage'\n";
+                        ($source, $extracted_format, $extracted_dir) =
+                            PVE::QemuServer::ImportDisk::extract_ova_disk(
+                                $storecfg, $source, $vmid, $ds, $working_storage,
+                            );
+                        print "finished extracting to $source\n";
+                        $source_storage = undef;
+                    }
+                }
+
                 if ($source_storage) { # PVE-managed volume
                     my ($vtype, $source_format) =
                         (checked_parse_volname($storecfg, $source))[0, 6];
@@ -929,50 +965,59 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                         die "cannot import from '$source' - $@" if $@;
                     }
                 } else {
-                    $source = PVE::Storage::abs_filesystem_path($storecfg, $source, 1);
-                    # check potentially untrusted image file!
-                    ($size, my $source_format) =
-                        PVE::Storage::file_size_info($source, undef, 'auto-detect', 1);
-                    die "could not get file size of $source\n" if !$size;
-
-                    my $source_header;
-                    if ($dasd) {
-                        die "$ds: live import is not supported for DASDs\n" if $live_import;
-                        $source_header =
-                            $check_dasd_import_source->($ds, $source, $source_format, $size);
-                    }
-
-                    if ($live_import && $ds ne 'efidisk0') {
-                        $live_import_mapping->{$ds} = {
-                            path => $source,
-                            format => $source_format,
-                            volid => $source,
-                        };
-                    } else {
-                        (undef, $dst_volid) = PVE::QemuServer::ImportDisk::do_import(
-                            $source,
-                            $size,
-                            $vmid,
-                            $storeid,
-                            {
-                                drive_name => $ds,
-                                format => $disk->{format},
-                                'skip-config-update' => 1,
-                                'volume-name' => $volume_name,
-                            },
+                    eval {
+                        $source = PVE::Storage::abs_filesystem_path($storecfg, $source, 1);
+                        # check potentially untrusted image file!
+                        ($size, my $source_format) = PVE::Storage::file_size_info(
+                            $source, undef, $extracted_format // 'auto-detect', 1,
                         );
+                        die "could not get file size of $source\n" if !$size;
 
-                        push @$vollist, $dst_volid; # freed if anything below fails
-
-                        $finish_dasd_import->($ds, $disk, $dst_volid, $source_header) if $dasd;
-
-                        # change imported disk to a base volume in case the VM is a template
-                        if (PVE::QemuConfig->is_template($conf)) {
-                            @$vollist = grep { $_ ne $dst_volid } @$vollist;
-                            $dst_volid = PVE::Storage::vdisk_create_base($storecfg, $dst_volid);
-                            push @$vollist, $dst_volid;
+                        my $source_header;
+                        if ($dasd) {
+                            die "$ds: live import is not supported for DASDs\n" if $live_import;
+                            $source_header =
+                                $check_dasd_import_source->($ds, $source, $source_format, $size);
                         }
+
+                        if ($live_import && $ds ne 'efidisk0') {
+                            $live_import_mapping->{$ds} = {
+                                path => $source,
+                                format => $source_format,
+                                volid => $source,
+                            };
+                        } else {
+                            (undef, $dst_volid) = PVE::QemuServer::ImportDisk::do_import(
+                                $source,
+                                $size,
+                                $vmid,
+                                $storeid,
+                                {
+                                    drive_name => $ds,
+                                    format => $disk->{format},
+                                    'skip-config-update' => 1,
+                                    'volume-name' => $volume_name,
+                                },
+                            );
+
+                            push @$vollist, $dst_volid; # freed if anything below fails
+
+                            $finish_dasd_import->($ds, $disk, $dst_volid, $source_header) if $dasd;
+
+                            # change imported disk to a base volume in case the VM is a template
+                            if (PVE::QemuConfig->is_template($conf)) {
+                                @$vollist = grep { $_ ne $dst_volid } @$vollist;
+                                $dst_volid = PVE::Storage::vdisk_create_base($storecfg, $dst_volid);
+                                push @$vollist, $dst_volid;
+                            }
+                        }
+                    };
+                    my $err = $@;
+                    if (defined($extracted_dir)) {
+                        File::Path::remove_tree($extracted_dir);
+                        print "cleaned up extracted image $source\n";
                     }
+                    die $err if $err;
                 }
 
                 if ($needs_creation) {
@@ -1712,11 +1757,11 @@ __PACKAGE__->register_method({
                     'pve-storage-id',
                     {
                         description =>
-                            "A file-based storage with 'images' content-type enabled, which"
-                            . " is used as an intermediary extraction storage during import. Defaults to"
-                            . " the source storage; if that cannot hold images, to the target"
-                            . " storage or else the first file-based storage with 'images'"
-                            . " content of the node.",
+                            "A file-based storage, which is used as an intermediary extraction"
+                            . " storage during import (in a temporary directory, removed"
+                            . " afterwards). A live import needs 'images' content-type enabled."
+                            . " Defaults to the source storage; if that cannot be one, to the"
+                            . " target storage or else the first such storage of the node.",
                         optional => 1,
                         completion => \&PVE::QemuServer::complete_storage,
                     },
@@ -1833,10 +1878,17 @@ __PACKAGE__->register_method({
             &$resolve_cdrom_alias($param);
 
             $extraction_storage = default_import_working_storage(
-                $storecfg, $param, $storage, $extraction_storage,
+                $storecfg, $param, $storage, $extraction_storage, $live_restore,
             );
             &$check_storage_access(
-                $rpcenv, $authuser, $storecfg, $vmid, $param, $storage, $extraction_storage,
+                $rpcenv,
+                $authuser,
+                $storecfg,
+                $vmid,
+                $param,
+                $storage,
+                $extraction_storage,
+                $live_restore,
             );
 
             &$check_vm_modify_config_perm($rpcenv, $authuser, $vmid, $pool, [keys %$param]);
@@ -3816,11 +3868,11 @@ __PACKAGE__->register_method({
                     'pve-storage-id',
                     {
                         description =>
-                            "A file-based storage with 'images' content-type enabled, which"
-                            . " is used as an intermediary extraction storage during import. Defaults to"
-                            . " the source storage; if that cannot hold images, to the target"
-                            . " storage or else the first file-based storage with 'images'"
-                            . " content of the node.",
+                            "A file-based storage, which is used as an intermediary extraction"
+                            . " storage during import (in a temporary directory, removed"
+                            . " afterwards). A live import needs 'images' content-type enabled."
+                            . " Defaults to the source storage; if that cannot be one, to the"
+                            . " target storage or else the first such storage of the node.",
                         optional => 1,
                         completion => \&PVE::QemuServer::complete_storage,
                     },

@@ -3,12 +3,15 @@ package PVE::QemuServer::ImportDisk;
 use strict;
 use warnings;
 
+use File::Path;
+
 use PVE::Storage;
 use PVE::Tools qw(run_command extract_param);
 
 use PVE::QemuConfig;
 use PVE::QemuServer;
 use PVE::QemuServer::DASD;
+use PVE::QemuServer::Drive;
 use PVE::QemuServer::QemuImage;
 
 # imports an external disk image to an existing VM
@@ -101,6 +104,64 @@ sub do_import {
     }
 
     return ($drive_name, $dst_volid);
+}
+
+# Extracts the disk image $volid ('<storage>:import/<name>.ova/<file>') of an OVA into a new
+# temporary directory on the file based storage $working_storeid, as '<drive>.<format>'. The storage needs no 'images' content: the image is only read from there, by the
+# import of the disk. Returns the path of the image, its format and the directory, which the
+# caller removes (File::Path::remove_tree) when the import is done.
+sub extract_ova_disk {
+    my ($storecfg, $volid, $vmid, $drive_name, $working_storeid) = @_;
+
+    my ($source_storeid) = PVE::Storage::parse_volume_id($volid);
+    my ($vtype, $name, undef, undef, undef, undef, $fmt) =
+        PVE::Storage::parse_volname($storecfg, $volid);
+    die "only files with content type 'import' can be extracted\n" if $vtype ne 'import';
+    my ($inner_fmt) = ($fmt // '') =~ m/^ova\+(.+)$/
+        or die "only files from 'ova' format can be extracted\n";
+    die "'$volid' is a tape medium, not a disk image\n" if $inner_fmt eq 'aws';
+    die "cannot extract $volid - invalid format '$inner_fmt'\n"
+        if $inner_fmt !~ m/^($PVE::QemuServer::Drive::QEMU_FORMAT_RE)$/;
+    my ($archive, $inner_file) =
+        $name =~ m!^(.*\.ova)/(${PVE::Storage::SAFE_CHAR_WITH_WHITESPACE_CLASS_RE}+)$!
+        or die "cannot extract $volid - invalid volume name\n";
+    my $ova_path = PVE::Storage::path($storecfg, "$source_storeid:import/$archive");
+
+    my $scfg = PVE::Storage::storage_config($storecfg, $working_storeid);
+    die "import working storage '$working_storeid' is not file based\n" if !$scfg->{path};
+    PVE::Storage::activate_storage($storecfg, $working_storeid);
+    my $dir = "$scfg->{path}/.import-tmp-$vmid-$$";
+    File::Path::make_path($dir, { mode => 0700 });
+
+    my $path = "$dir/$drive_name.$inner_fmt";
+    eval {
+        run_command([
+            'tar',
+            '-x',
+            '--force-local',
+            '--no-same-owner',
+            '-C',
+            $dir,
+            '-f',
+            $ova_path,
+            '--',
+            $inner_file,
+        ]);
+        my $extracted = "$dir/$inner_file";
+        die "extracted file '$inner_file' from '$ova_path' is not a regular file\n"
+            if -l $extracted || !-f $extracted;
+        if ($extracted ne $path) {
+            rename($extracted, $path) or die "unable to rename '$extracted' - $!\n";
+        }
+        # check the untrusted image file
+        PVE::Storage::file_size_info($path, undef, $inner_fmt, 1);
+    };
+    if (my $err = $@) {
+        File::Path::remove_tree($dir);
+        die "error during extraction: $err";
+    }
+
+    return ($path, $inner_fmt, $dir);
 }
 
 1;

@@ -1322,11 +1322,11 @@ __PACKAGE__->register_method({
                 'import-working-storage' => get_standard_option(
                     'pve-storage-id',
                     {
-                        description => "A file-based storage with 'images' content-type"
-                            . " enabled, used to extract the disk images of an OVA. Defaults"
-                            . " to the source storage; if that cannot hold images, to the"
-                            . " target storage or else the first file-based storage with"
-                            . " 'images' content of the node.",
+                        description => "A file-based storage, used to extract the disk"
+                            . " images of an OVA (in a temporary directory, removed afterwards)."
+                            . " A live import needs 'images' content-type enabled. Defaults to"
+                            . " the source storage; if that cannot be one, to the target storage"
+                            . " or else the first such storage of the node.",
                         optional => 1,
                         completion => \&PVE::QemuServer::complete_storage,
                     },
