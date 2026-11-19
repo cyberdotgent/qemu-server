@@ -257,6 +257,67 @@ my $check_drive_param = sub {
     }
 };
 
+# Whether a storage can hold the disk images extracted from an OVA: file based with 'images'.
+my sub is_import_working_storage {
+    my ($scfg) = @_;
+    return $scfg && $scfg->{content}->{images} && $scfg->{path} ? 1 : 0;
+}
+
+# The import working storage when none is given and the source storage of an image to extract
+# (an OVA on an 'import' storage) cannot hold the extracted image, as the 'local' storage of a
+# node with the disk images on LVM or ZFS: the target storage of the disk, if it is file based
+# with 'images', else the first enabled storage of the node that is. A given working storage, or
+# source storages that can hold the images, keep the upstream behaviour (undef: the source
+# storage).
+sub default_import_working_storage {
+    my ($storecfg, $settings, $default_storage, $extraction_storage) = @_;
+
+    return $extraction_storage if defined($extraction_storage);
+
+    my ($needed, $target);
+    $foreach_volume_with_alloc->(
+        $settings,
+        sub {
+            my ($ds, $drive) = @_;
+
+            my $src_image = $drive->{'import-from'} or return;
+            my ($storeid) = PVE::Storage::parse_volume_id($src_image, 1);
+            return if !$storeid;
+            my ($vtype, $fmt) = (eval { checked_parse_volname($storecfg, $src_image) })[0, 6];
+            return if !defined($vtype) || !PVE::QemuServer::Helpers::needs_extraction($vtype, $fmt);
+            my $scfg = PVE::Storage::storage_config($storecfg, $storeid, 1);
+            return if is_import_working_storage($scfg);
+
+            $needed //= $ds;
+            if (!defined($target) && $drive->{file} =~ $PVE::QemuServer::Drive::NEW_DISK_RE) {
+                my $target_id = $2 || $default_storage;
+                my $target_scfg =
+                    $target_id ? PVE::Storage::storage_config($storecfg, $target_id, 1) : undef;
+                $target = $target_id if is_import_working_storage($target_scfg);
+            }
+        },
+    );
+    return undef if !defined($needed);
+
+    if (defined($target)) {
+        print "using the target storage '$target' as import working storage\n";
+        return $target;
+    }
+    my $node = PVE::INotify::nodename();
+    for my $storeid (sort keys $storecfg->{ids}->%*) {
+        my $scfg = PVE::Storage::storage_check_enabled($storecfg, $storeid, $node, 1);
+        next if !is_import_working_storage($scfg);
+        print "using storage '$storeid' as import working storage, neither the source nor the"
+            . " target storage of '$needed' is file based with 'images' content\n";
+        return $storeid;
+    }
+    raise_param_exc({
+        'import-working-storage' => "the image of '$needed' must be extracted to a file based"
+            . " storage with 'images' content, and this node has none: add the 'images' content"
+            . " type to a directory storage, or pass 'import-working-storage'",
+    });
+}
+
 my $check_storage_access = sub {
     my ($rpcenv, $authuser, $storecfg, $vmid, $settings, $default_storage, $extraction_storage)
         = @_;
@@ -1652,7 +1713,9 @@ __PACKAGE__->register_method({
                         description =>
                             "A file-based storage with 'images' content-type enabled, which"
                             . " is used as an intermediary extraction storage during import. Defaults to"
-                            . " the source storage.",
+                            . " the source storage; if that cannot hold images, to the target"
+                            . " storage or else the first file-based storage with 'images'"
+                            . " content of the node.",
                         optional => 1,
                         completion => \&PVE::QemuServer::complete_storage,
                     },
@@ -1768,6 +1831,9 @@ __PACKAGE__->register_method({
         if (scalar(keys $param->%*) > 0) {
             &$resolve_cdrom_alias($param);
 
+            $extraction_storage = default_import_working_storage(
+                $storecfg, $param, $storage, $extraction_storage,
+            );
             &$check_storage_access(
                 $rpcenv, $authuser, $storecfg, $vmid, $param, $storage, $extraction_storage,
             );
@@ -3174,6 +3240,8 @@ my $update_vm_api = sub {
 
     &$check_vm_modify_config_perm($rpcenv, $authuser, $vmid, undef, [keys %$param]);
 
+    $extraction_storage =
+        default_import_working_storage($storecfg, $param, undef, $extraction_storage);
     &$check_storage_access(
         $rpcenv, $authuser, $storecfg, $vmid, $param, undef, $extraction_storage,
     );
@@ -3747,7 +3815,9 @@ __PACKAGE__->register_method({
                         description =>
                             "A file-based storage with 'images' content-type enabled, which"
                             . " is used as an intermediary extraction storage during import. Defaults to"
-                            . " the source storage.",
+                            . " the source storage; if that cannot hold images, to the target"
+                            . " storage or else the first file-based storage with 'images'"
+                            . " content of the node.",
                         optional => 1,
                         completion => \&PVE::QemuServer::complete_storage,
                     },

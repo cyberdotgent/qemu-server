@@ -1308,6 +1308,18 @@ __PACKAGE__->register_method({
                     enum => ['raw', 'qcow2', 'vmdk'],
                     optional => 1,
                 },
+                'import-working-storage' => get_standard_option(
+                    'pve-storage-id',
+                    {
+                        description => "A file-based storage with 'images' content-type"
+                            . " enabled, used to extract the disk images of an OVA. Defaults"
+                            . " to the source storage; if that cannot hold images, to the"
+                            . " target storage or else the first file-based storage with"
+                            . " 'images' content of the node.",
+                        optional => 1,
+                        completion => \&PVE::QemuServer::complete_storage,
+                    },
+                ),
             },
             1, # with_disk_alloc
         ),
