@@ -164,7 +164,7 @@ is_deeply(
     'window sizes: 3270 screen, c3270 menu bar and status line',
 );
 is_deeply(
-    PVE::QemuServer::Console3270::attach_command(100, '3270'),
+    PVE::QemuServer::Console3270::attach_command(100, '3270', 0x0f),
     [
         '/usr/bin/tmux',
         '-u',
@@ -174,7 +174,22 @@ is_deeply(
         '-t',
         '=3270',
     ],
-    'attach command: tmux session of the console',
+    'attach command with detach key: tmux session of the console',
+);
+is_deeply(
+    PVE::QemuServer::Console3270::attach_command(100, 'terminal2', 0),
+    [
+        '/usr/bin/tmux',
+        '-u',
+        '-S',
+        '/var/run/qemu-server/100.3270.tmux',
+        'attach-session',
+        '-f',
+        'ignore-size',
+        '-t',
+        '=terminal2',
+    ],
+    'attach command without detach key: Ctrl+] goes to c3270',
 );
 is(
     PVE::QemuServer::Console3270::unit_name(100),

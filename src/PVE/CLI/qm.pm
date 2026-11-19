@@ -888,8 +888,9 @@ __PACKAGE__->register_method({
         if (PVE::QemuServer::Console3270::is_3270_iface($iface)) {
             # the 3270 consoles stay connected as long as the VM runs, attach to their session
             PVE::QemuServer::Console3270::ensure_session($vmid, $iface);
-            $cmd = PVE::QemuServer::Console3270::attach_command($vmid, $iface);
-            $escapemsg = ' (press Ctrl+] to detach)';
+            # any escape key makes Ctrl+] detach, without one (the web consoles) Ctrl+] goes to c3270
+            $cmd = PVE::QemuServer::Console3270::attach_command($vmid, $iface, $escape);
+            $escapemsg = ' (press Ctrl+] to detach)' if $escape;
         } else {
             $cmd = PVE::QemuServer::Helpers::get_terminal_command($vmid, $iface, $escape);
             $escapemsg = sprintf(' (press Ctrl+%c to exit)', $escape + 0x40) if $escape;

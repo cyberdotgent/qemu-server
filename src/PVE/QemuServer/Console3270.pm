@@ -199,10 +199,19 @@ sub ensure_session {
         if !has_session($vmid, $iface);
 }
 
-# Attach the terminal to the session of a 3270 console. Ctrl+] detaches.
+# Attach the terminal to the session of a 3270 console. With $detach_key, Ctrl+] detaches ('qm
+# terminal'), without it the viewer sends Ctrl+] to c3270 like any other key and only leaves by
+# disconnecting (the web consoles): the client flag ignore-size tells the tmux config, it changes
+# nothing else as the windows have a fixed size.
 sub attach_command {
-    my ($vmid, $iface) = @_;
-    return tmux_command($vmid, 'attach-session', '-t', "=$iface");
+    my ($vmid, $iface, $detach_key) = @_;
+    return tmux_command(
+        $vmid,
+        'attach-session',
+        ($detach_key ? () : ('-f', 'ignore-size')),
+        '-t',
+        "=$iface",
+    );
 }
 
 1;
