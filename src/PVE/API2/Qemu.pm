@@ -1207,6 +1207,7 @@ my $generaloptions = {
     'ostype' => 1,
     'protection' => 1,
     'reboot' => 1,
+    'sclplm-codepage' => 1,
     'sclplm-syslog' => 1,
     'startdate' => 1,
     'startup' => 1,
@@ -3658,7 +3659,7 @@ my $update_vm_api = sub {
                     PVE::QemuServer::IPL::check_ipl_config(
                         $get_config_with_pending->($conf), $storecfg,
                     );
-                } elsif ($opt eq 'sclplm-syslog') {
+                } elsif ($opt eq 'sclplm-syslog' || $opt eq 'sclplm-codepage') {
                     die "only s390x VMs have an SCLP line-mode console\n" if $arch ne 's390x';
                 }
             }

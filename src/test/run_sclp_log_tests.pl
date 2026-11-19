@@ -296,4 +296,11 @@ like($out, qr/^<133>1 \S+ vm300 pve-sclplm 300 MARK - \x{2500}{4} IPL /, 'marker
     is($s->{dropped}, 2, 'dropped messages counted');
 }
 
+# the code page of the line-mode console
+is(PVE::QemuServer::SclpLog::codepage_property({}), undef, 'code page: QEMU default (037)');
+is(PVE::QemuServer::SclpLog::codepage_property({ 'sclplm-codepage' => 'cp037' }), undef,
+    'code page 037: QEMU default');
+is(PVE::QemuServer::SclpLog::codepage_property({ 'sclplm-codepage' => 'cp500' }), '500',
+    'code page 500 (Linux)');
+
 done_testing();

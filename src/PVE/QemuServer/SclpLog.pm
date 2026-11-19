@@ -111,6 +111,29 @@ our $syslog_desc = {
         . " markers, as RFC 5424 messages (MSGID OUT, IN, MARK). Applies while the VM runs.",
 };
 
+# The EBCDIC code page of the line-mode console (QEMU's sclplmconsole property 'codepage'). The
+# operating system decides which one it uses, nothing tells QEMU: the mainframe operating systems use 037
+# (the default), Linux 500. With the wrong one, characters such as | [ ] ^ ! are garbled.
+our $codepage_desc = {
+    optional => 1,
+    type => 'string',
+    enum => ['cp037', 'cp500'],
+    default => 'cp037',
+    description => "The EBCDIC code page the guest uses on the SCLP line-mode console of an s390x"
+        . " VM: 'cp037' for the mainframe operating systems, 'cp500' for Linux (which also takes '%' to"
+        . " switch the case of the input: enter '%%' for a '%'). Applies at the next start.",
+};
+
+# The value of QEMU's 'codepage' property, undef for QEMU's default (037).
+sub codepage_property {
+    my ($conf) = @_;
+
+    my $codepage = $conf->{'sclplm-codepage'} // 'cp037';
+    return undef if $codepage eq 'cp037';
+    $codepage =~ s/^cp0*//;
+    return $codepage;
+}
+
 sub parse_syslog {
     my ($value) = @_;
 

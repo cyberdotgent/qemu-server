@@ -429,6 +429,7 @@ EODESC
             . " parameter, instead of the boot order.",
     },
     'sclplm-syslog' => $PVE::QemuServer::SclpLog::syslog_desc,
+    'sclplm-codepage' => $PVE::QemuServer::SclpLog::codepage_desc,
     netboot => $PVE::QemuServer::Netboot::netboot_desc,
     'netboot-cmdline' => $PVE::QemuServer::Netboot::netboot_cmdline_desc,
     bootdisk => {
@@ -3678,16 +3679,23 @@ sub config_to_command {
                 push @$devices, '-device', 'sclpconsole,chardev=sclp';
             } elsif ($console eq 'sclplm') {
                 push @$devices, '-chardev', "socket,id=sclplm,path=$socket,server=on,wait=off";
+                my $device = 'sclplmconsole,chardev=sclplm';
                 # the hardcopy of the console (PVE::QemuServer::SclpLog), with QEMU-mod
                 if (PVE::QemuServer::Helpers::kvm_device_has_property(
                     $kvm_binary, 'sclplmconsole', 'hardcopy',
                 )) {
                     push @$devices, '-chardev', PVE::QemuServer::SclpLog::chardev_option($vmid);
-                    push @$devices, '-device',
-                        'sclplmconsole,chardev=sclplm,' . PVE::QemuServer::SclpLog::device_property();
-                } else {
-                    push @$devices, '-device', 'sclplmconsole,chardev=sclplm';
+                    $device .= ',' . PVE::QemuServer::SclpLog::device_property();
                 }
+                if (defined(my $codepage = PVE::QemuServer::SclpLog::codepage_property($conf))) {
+                    die "sclplm-codepage: the installed QEMU has no code page setting for the"
+                        . " line-mode console\n"
+                        if !PVE::QemuServer::Helpers::kvm_device_has_property(
+                            $kvm_binary, 'sclplmconsole', 'codepage',
+                        );
+                    $device .= ",codepage=$codepage";
+                }
+                push @$devices, '-device', $device;
             } elsif ($console eq '3270') {
                 # not part of upstream QEMU, but of QEMU builds with mainframe support
                 if (!PVE::QemuServer::Helpers::kvm_device_types($kvm_binary)->{sclp3270console}) {
