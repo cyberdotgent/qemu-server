@@ -344,6 +344,9 @@ sub get_terminal_command {
     my $socket = console_socket($vmid, $iface);
 
     my $options = 'raw,echo=0';
+    # The line-mode console ends its lines with LF only, like a printer log (QEMU's line editor
+    # too): let the terminal start each line in column 1.
+    $options .= ',opost=1,onlcr=1' if $iface eq 'sclplm';
     $options .= sprintf(',escape=0x%x', $escape) if $escape;
     return ['socat', "UNIX-CONNECT:$socket", "STDIO,$options"];
 }

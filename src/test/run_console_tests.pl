@@ -52,7 +52,7 @@ my $terminal_tests = [
         expected => [
             'socat',
             'UNIX-CONNECT:/var/run/qemu-server/100.sclplm',
-            'STDIO,raw,echo=0,escape=0xf',
+            'STDIO,raw,echo=0,opost=1,onlcr=1,escape=0xf',
         ],
     },
 ];
