@@ -3337,6 +3337,23 @@ sub assert_s390x_machine_devices {
     return;
 }
 
+# Refuse setting an option an s390x VM cannot have, instead of only failing at start (see
+# config_to_command()). Deleting such an option of an existing config stays possible.
+sub assert_s390x_option_supported {
+    my ($arch, $opt) = @_;
+
+    return if $arch ne 's390x';
+
+    die "$opt: AMD SEV is not supported on s390x\n" if $opt eq 'amd-sev';
+    die "$opt: Intel TDX is not supported on s390x\n" if $opt eq 'intel-tdx';
+    if ($opt =~ m/^(ide|sata)\d+$/) {
+        die "$opt: " . uc($1) . " is not supported on s390x, use an FBA DASD (also for the"
+            . " cloud-init drive), a SCSI or a VirtIO disk\n";
+    }
+
+    return;
+}
+
 sub config_to_command {
     my ($storecfg, $vmid, $conf, $defaults, $options) = @_;
 

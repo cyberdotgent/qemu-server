@@ -495,6 +495,62 @@ subtest 's390x: adding DASDs to an existing VM' => sub {
     mock_unreachable_config();
 };
 
+subtest 's390x: options s390x VMs cannot have are refused when set' => sub {
+    my $stored;
+    my $written = 0;
+
+    $qemu_config_module->mock(
+        load_config => sub { return dclone($stored); },
+        lock_config => sub {
+            my ($class, $vmid, $code, @param) = @_;
+            return $code->(@param);
+        },
+        write_config => sub { $written++; },
+    );
+
+    $stored = { arch => 's390x', ostype => 'l26', pending => {}, snapshots => {} };
+
+    for my $test (
+        [{ ide2 => 'none,media=cdrom' }, qr/^ide2: IDE is not supported on s390x/],
+        [{ ide0 => 'local:cloudinit' }, qr/^ide0: IDE is not supported on s390x/],
+        [{ sata1 => 'none,media=cdrom' }, qr/^sata1: SATA is not supported on s390x/],
+        [{ 'amd-sev' => 'type=std' }, qr/^amd-sev: AMD SEV is not supported on s390x/],
+        [{ 'intel-tdx' => 'type=tdx' }, qr/^intel-tdx: Intel TDX is not supported on s390x/],
+        [
+            { name => 'other', ide2 => 'none,media=cdrom' },
+            qr/^ide2: IDE is not supported on s390x/,
+        ],
+    ) {
+        my ($param, $expected) = @$test;
+        my $what = join(' ', map { "--$_ $param->{$_}" } sort keys %$param);
+        eval { PVE::API2::Qemu->update_vm({ node => 'localhost', vmid => 100, %$param }) };
+        like($@, $expected, "update_vm $what refused");
+    }
+    is($written, 0, 'nothing written, also not the other options');
+
+    my $cluster_module = Test::MockModule->new('PVE::Cluster');
+    $cluster_module->mock(
+        check_vmid_unused => sub { return; },
+        check_cfs_quorum => sub { return; },
+    );
+    my $rpcenv_module = Test::MockModule->new('PVE::RPCEnvironment');
+    $rpcenv_module->mock(check => sub { return 1; });
+    for my $test (
+        [{ ide2 => 'none,media=cdrom' }, qr/^ide2: IDE is not supported on s390x/],
+        [{ 'amd-sev' => 'type=std' }, qr/^amd-sev: AMD SEV is not supported on s390x/],
+    ) {
+        my ($param, $expected) = @$test;
+        my $what = join(' ', map { "--$_ $param->{$_}" } sort keys %$param);
+        eval {
+            PVE::API2::Qemu->create_vm(
+                { node => 'localhost', vmid => 100, arch => 's390x', %$param });
+        };
+        like($@, $expected, "create_vm $what refused");
+    }
+
+    mock_unreachable_config();
+};
+
 subtest 's390x: importing a DASD from a storage volume' => sub {
     my $stored = {
         arch => 's390x',
