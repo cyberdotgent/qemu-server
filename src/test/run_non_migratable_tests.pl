@@ -16,18 +16,27 @@ my $tests = [
         expected => [],
     },
     {
-        name => 'qeth adapters cannot be migrated with state',
+        name => 'mainframe devices can be migrated with state',
         conf => {
             net0 => 'virtio=BC:24:11:00:00:00,bridge=vmbr0',
             net1 => 'qeth=BC:24:11:00:00:01,bridge=vmbr0,devno=0.0.0400',
             net2 => 'bridge=vmbr0,model=qeth,devno=0.0.0404',
+            ckd0 => 'local:100/vm-100-disk-0.raw,size=1G',
+            tape0 => 'local:iso/install.aws',
+            terminal0 => 'devno=0.0.0700',
         },
         state => 1,
-        expected => ['net1 (qeth)', 'net2 (qeth)'],
+        expected => [],
     },
     {
-        name => 'qeth adapters do not block offline migration',
-        conf => { net1 => 'qeth=BC:24:11:00:00:01,bridge=vmbr0,devno=0.0.0400' },
+        name => 'confidential computing blocks state',
+        conf => { 'amd-sev' => 'type=std' },
+        state => 1,
+        expected => ['amd-sev'],
+    },
+    {
+        name => 'confidential computing does not block offline migration',
+        conf => { 'amd-sev' => 'type=std' },
         state => 0,
         expected => [],
     },
@@ -42,15 +51,15 @@ for my $test ($tests->@*) {
 
 eval {
     PVE::QemuMigrate::Helpers::check_non_migratable_resources(
-        { net0 => 'qeth=BC:24:11:00:00:01,devno=0.0.0400' },
+        { 'amd-sev' => 'type=std', ckd0 => 'local:100/vm-100-disk-0.raw,size=1G' },
         1,
         0,
     );
 };
 is(
     $@,
-    "Cannot live-migrate, snapshot (with RAM), or hibernate a VM with: net0 (qeth)\n",
-    'qeth refuses live migration, RAM snapshots and hibernation up front',
+    "Cannot live-migrate, snapshot (with RAM), or hibernate a VM with: amd-sev\n",
+    'blockers refuse live migration, RAM snapshots and hibernation up front',
 );
 
 done_testing();

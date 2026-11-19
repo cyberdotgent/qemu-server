@@ -241,9 +241,9 @@ is_deeply(
     'DASDs are IPL devices, cloud-init is not',
 );
 
-# no RAM snapshot, hibernation or live migration with CKD volumes
+# RAM snapshots, hibernation and live migration with CKD volumes
 eval { PVE::QemuMigrate::Helpers::check_non_migratable_resources($conf, 1, 0) };
-like($@, qr/snapshot \(with RAM\), or hibernate a VM with: ckd0$/, 'CKD blocks VM state');
+is($@, '', 'CKD allows VM state');
 eval { PVE::QemuMigrate::Helpers::check_non_migratable_resources($conf, 0, 0) };
 is($@, '', 'CKD allows offline operations');
 
