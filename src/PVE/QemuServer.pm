@@ -4761,14 +4761,32 @@ sub foreach_volid {
         include_unused => 1,
     };
 
-    PVE::QemuConfig->foreach_volume_full($conf, $include_opts, $test_volid);
+    # the media of s390x tape drives are read-only removable media, like CD-ROM images
+    my $test_tapes = sub {
+        my ($conf, $snapname, $pending) = @_;
+        for my $key (PVE::QemuServer::Tape::valid_tape_keys()) {
+            next if !$conf->{$key};
+            my $tape = eval { PVE::QemuServer::Tape::parse_tape($conf->{$key}) } or next;
+            next if $tape->{file} eq 'none';
+            $test_volid->($key, { file => $tape->{file}, media => 'cdrom' }, $snapname, $pending);
+            $volhash->{ $tape->{file} }->{tape} = 1;
+        }
+    };
 
-    PVE::QemuConfig->foreach_volume_full($conf->{pending}, $include_opts, $test_volid, undef, 1)
-        if defined($conf->{pending}) && $conf->{pending}->%*;
+    PVE::QemuConfig->foreach_volume_full($conf, $include_opts, $test_volid);
+    $test_tapes->($conf);
+
+    if (defined($conf->{pending}) && $conf->{pending}->%*) {
+        PVE::QemuConfig->foreach_volume_full(
+            $conf->{pending}, $include_opts, $test_volid, undef, 1,
+        );
+        $test_tapes->($conf->{pending}, undef, 1);
+    }
 
     foreach my $snapname (keys %{ $conf->{snapshots} }) {
         my $snap = $conf->{snapshots}->{$snapname};
         PVE::QemuConfig->foreach_volume_full($snap, $include_opts, $test_volid, $snapname);
+        $test_tapes->($snap, $snapname);
     }
 
     foreach my $volid (keys %$volhash) {

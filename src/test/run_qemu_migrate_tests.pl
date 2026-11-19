@@ -449,6 +449,14 @@ my $source_other_volumes = {
             'used' => 663748608,
             'volid' => 'local:iso/debian.iso',
         },
+        {
+            'ctime' => 1589439681,
+            'format' => 'raw',
+            'parent' => undef,
+            'size' => 108003328,
+            'used' => 108003328,
+            'volid' => 'local:iso/install.aws',
+        },
     ],
 };
 
@@ -1371,6 +1379,109 @@ my $tests = [
             target_volids => {},
             vm_config => get_patched_config(105, {
                     ide2 => 'cdrom,media=cdrom',
+            }),
+            vm_status => {
+                running => 0,
+            },
+        },
+    },
+    {
+        name => '105_local_tape',
+        target => 'pve1',
+        vmid => 105,
+        vm_status => {
+            running => 0,
+        },
+        config_patch => {
+            tape0 => 'local:iso/install.aws',
+        },
+        expected_calls => {},
+        expect_die => "can't migrate local disk 'local:iso/install.aws': local tape image",
+        expected => {
+            source_volids => local_volids_for_vm(105),
+            target_volids => {},
+            vm_config => get_patched_config(105, {
+                    tape0 => 'local:iso/install.aws',
+            }),
+            vm_status => {
+                running => 0,
+            },
+        },
+    },
+    {
+        name => '105_local_tape_in_snapshot',
+        target => 'pve1',
+        vmid => 105,
+        vm_status => {
+            running => 0,
+        },
+        config_patch => {
+            snapshots => {
+                ohsnap => {
+                    tape1 => 'local:iso/install.aws,devno=0.0.0590',
+                },
+            },
+        },
+        expected_calls => {},
+        expect_die => "can't migrate local disk 'local:iso/install.aws': local tape image"
+            . " (referenced in snapshot - ohsnap)",
+        expected => {
+            source_volids => local_volids_for_vm(105),
+            target_volids => {},
+            vm_config => get_patched_config(
+                105,
+                {
+                    snapshots => {
+                        ohsnap => {
+                            tape1 => 'local:iso/install.aws,devno=0.0.0590',
+                        },
+                    },
+                },
+            ),
+            vm_status => {
+                running => 0,
+            },
+        },
+    },
+    {
+        name => '105_local_device_tape',
+        target => 'pve1',
+        vmid => 105,
+        vm_status => {
+            running => 0,
+        },
+        config_patch => {
+            tape0 => '/srv/install.aws',
+        },
+        expected_calls => {},
+        expect_die => "can't migrate local disk '/srv/install.aws': local file/device",
+        expected => {
+            source_volids => local_volids_for_vm(105),
+            target_volids => {},
+            vm_config => get_patched_config(105, {
+                    tape0 => '/srv/install.aws',
+            }),
+            vm_status => {
+                running => 0,
+            },
+        },
+    },
+    {
+        name => '105_empty_tape',
+        target => 'pve1',
+        vmid => 105,
+        vm_status => {
+            running => 0,
+        },
+        config_patch => {
+            tape0 => 'none',
+        },
+        expected_calls => $default_expected_calls_offline,
+        expected => {
+            source_volids => {},
+            target_volids => local_volids_for_vm(105),
+            vm_config => get_patched_config(105, {
+                    tape0 => 'none',
             }),
             vm_status => {
                 running => 0,

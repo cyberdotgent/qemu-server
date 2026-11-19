@@ -490,7 +490,8 @@ sub scan_local_volumes {
                     $local_volumes->{$volid}->{ref} = 'generated';
                     return;
                 }
-                die "local cdrom image$snapshot_hint\n";
+                my $what = $attr->{tape} ? 'tape' : 'cdrom';
+                die "local $what image$snapshot_hint\n";
             }
 
             my ($path, $owner) = PVE::Storage::path($storecfg, $volid);
