@@ -3344,9 +3344,18 @@ sub assert_s390x_machine_devices {
 # Refuse setting an option an s390x VM cannot have, instead of only failing at start (see
 # config_to_command()). Deleting such an option of an existing config stays possible.
 sub assert_s390x_option_supported {
-    my ($arch, $opt) = @_;
+    my ($arch, $opt, $value) = @_;
 
     return if $arch ne 's390x';
+
+    # virtio-iommu-pci exists in QEMU for s390x, but Linux has no driver for it there (VIRTIO_IOMMU
+    # is for ARM64, x86 and RISC-V): the zPCI devices use the s390 PCI IOMMU. Intel needs q35.
+    if ($opt eq 'machine' && defined($value)) {
+        my $machine_conf = eval { PVE::QemuServer::Machine::parse_machine($value) } // {};
+        die "$opt: a vIOMMU is not supported on s390x, the PCI devices of s390x VMs (zPCI) use"
+            . " the IOMMU of the s390 PCI bus\n"
+            if $machine_conf->{viommu};
+    }
 
     die "$opt: AMD SEV is not supported on s390x\n" if $opt eq 'amd-sev';
     die "$opt: Intel TDX is not supported on s390x\n" if $opt eq 'intel-tdx';
@@ -4164,6 +4173,7 @@ sub config_to_command {
 
     PVE::QemuServer::Machine::assert_valid_machine_property($machine_conf);
 
+    die "a vIOMMU is not supported on s390x\n" if $machine_conf->{viommu} && $arch eq 's390x';
     if (my $viommu = $machine_conf->{viommu}) {
         my $aw_bits = '';
         if ($machine_conf->{'aw-bits'}) {

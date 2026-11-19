@@ -1854,7 +1854,8 @@ __PACKAGE__->register_method({
             $check_drive_param->($param, $storecfg);
 
             my $arch = PVE::QemuServer::Helpers::get_vm_arch($param);
-            PVE::QemuServer::assert_s390x_option_supported($arch, $_) for sort keys $param->%*;
+            PVE::QemuServer::assert_s390x_option_supported($arch, $_, $param->{$_})
+                for sort keys $param->%*;
 
             PVE::QemuServer::Network::add_random_macs($param);
             normalize_ccw_devnos($param);
@@ -3261,7 +3262,8 @@ my $update_vm_api = sub {
 
         # before anything is written (the values to revert to were accepted before)
         my $arch = PVE::QemuServer::Helpers::get_vm_arch($conf);
-        PVE::QemuServer::assert_s390x_option_supported($arch, $_) for sort keys %$param;
+        PVE::QemuServer::assert_s390x_option_supported($arch, $_, $param->{$_})
+            for sort keys %$param;
 
         # the CCW device numbers of the config with the changes must not overlap. Also refuses an
         # unrelated change of a config that has overlapping device numbers already.

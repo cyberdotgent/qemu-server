@@ -520,6 +520,7 @@ subtest 's390x: options s390x VMs cannot have are refused when set' => sub {
             { name => 'other', ide2 => 'none,media=cdrom' },
             qr/^ide2: IDE is not supported on s390x/,
         ],
+        [{ machine => 'czam,viommu=virtio' }, qr/^machine: a vIOMMU is not supported on s390x/],
     ) {
         my ($param, $expected) = @$test;
         my $what = join(' ', map { "--$_ $param->{$_}" } sort keys %$param);
