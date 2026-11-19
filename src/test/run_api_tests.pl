@@ -942,6 +942,19 @@ subtest 'default import working storage' => sub {
     %$ids = %$saved;
 };
 
+# the s390x default SCSI controller only goes into a copy of the config
+subtest 'default SCSI controller' => sub {
+    my $conf = { arch => 's390x', ostype => 'l26' };
+    my $res = PVE::QemuServer::with_default_scsihw($conf, 's390x');
+    is($res->{scsihw}, 'virtio-scsi-pci', 's390x: virtio SCSI');
+    ok(!exists($conf->{scsihw}), 's390x: the config itself is unchanged');
+    my $set = { scsihw => 'virtio-scsi-single' };
+    is(PVE::QemuServer::with_default_scsihw($set, 's390x'), $set, 's390x: configured kept');
+    my $x86 = {};
+    is(PVE::QemuServer::with_default_scsihw($x86, 'x86_64'), $x86, 'x86_64: as is (LSI)');
+    ok(!exists($x86->{scsihw}), 'x86_64: no scsihw');
+};
+
 # no balloon device for mainframe OS types on s390x unless set (VirtIO is for Linux guests)
 subtest 'balloon device' => sub {
     my $enabled = sub { PVE::QemuServer::balloon_enabled(@_) };

@@ -3412,6 +3412,17 @@ sub check_restore_config {
     return;
 }
 
+# The config $conf with the SCSI controller type a VM of architecture $arch gets when none is
+# configured: on s390x the virtio SCSI controller, the only one there, else $conf as is (the
+# devices default to the LSI controller). The default goes into a copy and must not be written to
+# the config (a resume from hibernation wrote 'scsihw' into it).
+sub with_default_scsihw {
+    my ($conf, $arch) = @_;
+
+    return $conf if defined($conf->{scsihw}) || $arch ne 's390x';
+    return { $conf->%*, scsihw => 'virtio-scsi-pci' };
+}
+
 sub config_to_command {
     my ($storecfg, $vmid, $conf, $defaults, $options) = @_;
 
@@ -3459,9 +3470,8 @@ sub config_to_command {
     my $kvm_binary = PVE::QemuServer::Helpers::get_command_for_arch($arch);
     my $kvmver = kvm_user_version($kvm_binary);
 
-    # the virtio SCSI controller is the only one on s390x, so it is the default there
-    $conf = { $conf->%*, scsihw => 'virtio-scsi-pci' }
-        if $arch eq 's390x' && !defined($conf->{scsihw});
+    my $scsihw_defaulted = !defined($conf->{scsihw});
+    $conf = with_default_scsihw($conf, $arch);
 
     if (!$kvmver || $kvmver !~ m/^(\d+)\.(\d+)/ || $1 < 6) {
         $kvmver //= "undefined";
@@ -4266,6 +4276,12 @@ sub config_to_command {
         push @$cmd, @$aa;
     }
 
+    # the caller may write the returned config (resume from hibernation): without the default
+    if ($scsihw_defaulted && defined($conf->{scsihw})) {
+        $conf = { $conf->%* };
+        delete $conf->{scsihw};
+    }
+
     return wantarray ? ($cmd, $spice_port, $pci_devices, $conf) : $cmd;
 }
 
@@ -4349,6 +4365,8 @@ sub delete_disk_hardware {
 
 sub vm_deviceplug {
     my ($storecfg, $conf, $vmid, $deviceid, $device, $arch, $machine_type) = @_;
+
+    $conf = with_default_scsihw($conf, $arch);
 
     my $devices_list = vm_devices_list($vmid);
     return 1 if defined($devices_list->{$deviceid});
@@ -4464,6 +4482,8 @@ sub vm_deviceplug {
 # fixme: this should raise exceptions on error!
 sub vm_deviceunplug {
     my ($vmid, $conf, $deviceid) = @_;
+
+    $conf = with_default_scsihw($conf, PVE::QemuServer::Helpers::get_vm_arch($conf));
 
     my $devices_list = vm_devices_list($vmid);
     return 1 if !defined($devices_list->{$deviceid});
