@@ -2001,6 +2001,7 @@ sub destroy_vm {
     } else {
         PVE::QemuConfig->destroy_config($vmid);
         PVE::QemuServer::SclpLog::remove_logs($vmid);
+        PVE::QemuServer::Console3270::remove_socket($vmid);
     }
 }
 

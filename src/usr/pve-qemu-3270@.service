@@ -11,6 +11,8 @@ RemainAfterExit=yes
 Environment=LANG=C.UTF-8 HOME=/root NOC3270PRO=1 LESSSECURE=1
 ExecStart=/usr/libexec/qemu-server/3270-sessions %i
 ExecReload=/usr/libexec/qemu-server/3270-sessions %i
+# the tmux server is killed with the unit and leaves its socket behind
+ExecStopPost=/bin/rm -f /run/qemu-server/%i.3270.tmux
 # c3270 only talks to QEMU and the tmux server only to its clients, over Unix sockets
 NoNewPrivileges=yes
 CapabilityBoundingSet=

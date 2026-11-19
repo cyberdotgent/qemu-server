@@ -182,6 +182,16 @@ sub stop_sessions {
     return if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
 
     eval { run_command(['/bin/systemctl', 'stop', unit_name($vmid)], quiet => 1, noerr => 1); };
+    remove_socket($vmid);
+}
+
+# Remove the socket the tmux server of a VM leaves behind when it is killed with the unit (after a stop, a migration or the destruction of the VM). The unit removes it too
+# (ExecStopPost), this covers VMs whose unit was stopped before.
+sub remove_socket {
+    my ($vmid) = @_;
+
+    my $socket = tmux_socket($vmid);
+    unlink($socket) or warn "unable to remove '$socket' - $!\n" if -S $socket && !-l $socket;
 }
 
 # Make sure the session of the 3270 console $iface of a running VM exists, for example after an

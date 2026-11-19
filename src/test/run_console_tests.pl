@@ -197,4 +197,23 @@ is(
     'systemd unit of the sessions',
 );
 
+
+# the socket a killed tmux server leaves behind is removed
+{
+    my $dir = tempdir(CLEANUP => 1);
+    local $PVE::QemuServer::Helpers::var_run_tmpdir = $dir;
+    my $socket = PVE::QemuServer::Console3270::tmux_socket(100);
+    is($socket, "$dir/100.3270.tmux", 'tmux socket path');
+    require IO::Socket::UNIX;
+    my $listener = IO::Socket::UNIX->new(Local => $socket, Listen => 1) or die "socket: $!\n";
+    close($listener);
+    ok(-S $socket, 'stale socket there');
+    PVE::QemuServer::Console3270::remove_socket(100);
+    ok(!-e $socket, 'stale socket removed');
+    PVE::QemuServer::Console3270::remove_socket(100); # nothing there: no warning, no error
+    file_set_contents("$dir/101.3270.tmux", 'not a socket');
+    PVE::QemuServer::Console3270::remove_socket(101);
+    ok(-f "$dir/101.3270.tmux", 'a file that is no socket is left alone');
+}
+
 done_testing();
