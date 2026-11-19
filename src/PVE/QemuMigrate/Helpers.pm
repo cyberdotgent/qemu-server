@@ -127,6 +127,10 @@ sub set_migration_caps {
         "auto-converge" => 1,
         "xbzrle" => 1,
         "dirty-bitmaps" => $dirty_bitmaps,
+        # In precopy, the source reports 'completed' once it sent the state, even if the target
+        # then fails to load it. With a return path, it waits for the target to finish loading
+        # and fails the migration (and keeps the VM running) if that failed.
+        "return-path" => $savevm ? 0 : 1,
     };
 
     my $supported_capabilities = mon_cmd($vmid, "query-migrate-capabilities");
