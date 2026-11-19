@@ -1259,6 +1259,17 @@ __PACKAGE__->register_method({
     },
 });
 
+# The options of the import that do not exist on an s390x host, left out of 'qm import' there:
+# the options s390x VMs cannot have (PVE::QemuServer::assert_s390x_option_supported()) and ACPI,
+# which s390x does not have. Foreign architectures are not offered on s390x.
+my sub host_import_properties {
+    my ($props) = @_;
+
+    return $props if PVE::QemuServer::Helpers::get_host_arch() ne 's390x';
+    delete $props->@{ grep { m/^(?:amd-sev|intel-tdx|acpi|(?:ide|sata)\d+)$/ } keys %$props };
+    return $props;
+}
+
 __PACKAGE__->register_method({
     name => 'vm_import',
     path => 'vm-import',
@@ -1266,7 +1277,7 @@ __PACKAGE__->register_method({
         "Import a foreign virtual guest from a supported import source, such as an ESXi storage.",
     parameters => {
         additionalProperties => 0,
-        properties => PVE::QemuServer::json_config_properties(
+        properties => host_import_properties(PVE::QemuServer::json_config_properties(
             {
                 vmid => get_standard_option(
                     'pve-vmid',
@@ -1322,7 +1333,7 @@ __PACKAGE__->register_method({
                 ),
             },
             1, # with_disk_alloc
-        ),
+        )),
     },
     returns => { type => 'null' },
     code => sub {
