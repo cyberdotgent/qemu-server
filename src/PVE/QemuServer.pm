@@ -6997,7 +6997,8 @@ my $parse_backup_hints = sub {
             $check_storage->($storeid, $scfg); # permission and content type check
 
             $virtdev_hash->{$virtdev} = $devinfo->{$devname};
-        } elsif ($line =~ m/^((?:ide|sata|scsi)\d+):\s*(.*)\s*$/) {
+        } elsif ($line =~ m/^((?:ide|sata|scsi|fba)\d+):\s*(.*)\s*$/) {
+            # the cloud-init drive of an s390x VM is an FBA DASD
             my $virtdev = $1;
             my $drive = parse_drive($virtdev, $2);
 
@@ -7106,9 +7107,9 @@ sub restore_update_config_line {
         $net->{macaddr} = PVE::Tools::random_ether_addr($dc->{mac_prefix}) if $net->{macaddr};
         $netstr = PVE::QemuServer::Network::print_net($net);
         $res .= "$id: $netstr\n";
-    } elsif ($line =~ m/^((ide|scsi|virtio|sata|efidisk|tpmstate)\d+):\s*(\S+)\s*$/) {
-        my $virtdev = $1;
-        my $value = $3;
+    } elsif ($line =~ m/^([a-z]+\d+):\s*(\S+)\s*$/ && is_valid_drivename($1)) {
+        # every drive, also the DASDs of s390x (fba, ckd): the restored volumes replace them
+        my ($virtdev, $value) = ($1, $2);
         my $di = parse_drive($virtdev, $value);
         if (defined($di->{backup}) && !$di->{backup}) {
             $res .= "#$line";
