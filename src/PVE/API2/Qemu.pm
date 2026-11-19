@@ -3939,6 +3939,9 @@ __PACKAGE__->register_method({
 
                     # only now remove the zombie config, else we can have reuse race
                     PVE::QemuConfig->destroy_config($vmid);
+
+                    # the hardcopy of the line-mode console (s390x), the unit that follows it
+                    PVE::QemuServer::SclpLog::remove_logs($vmid);
                 },
             );
         };

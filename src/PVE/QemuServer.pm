@@ -5900,6 +5900,7 @@ sub vm_start {
             if ($has_backup_lock && $running) {
                 # a backup is currently running, attempt to start the guest in the
                 # existing QEMU instance
+                PVE::QemuServer::SclpLog::backup_vm_started($vmid, $conf);
                 return PVE::QemuServer::RunState::vm_resume($vmid);
             }
 
@@ -6102,9 +6103,17 @@ sub vm_start_nolock {
         my $memory = get_current_memory($conf->{memory});
         $start_timeout = $params->{timeout} // config_aware_timeout($conf, $memory, $resume);
 
-        # a new hardcopy of the line-mode console, or the one of the saved state continued
+        # a new hardcopy of the line-mode console, or the one of the saved state continued:
+        # resume from hibernation ($resume, -loadstate of 'vmstate'), rollback of a snapshot
+        # with RAM ($statefile), and the paused start for a backup, which does not run the guest
         if (grep { $_ eq PVE::QemuServer::SclpLog::chardev_option($vmid) } $cmd->@*) {
-            PVE::QemuServer::SclpLog::prepare_start($vmid, $statefile && !$migratedfrom);
+            my $how = 'start';
+            if (!$migratedfrom && ($statefile || $resume)) {
+                $how = 'resume';
+            } elsif (!$migratedfrom && $params->{paused} && !$params->{'live-restore-backing'}) {
+                $how = 'backup';
+            }
+            PVE::QemuServer::SclpLog::prepare_start($vmid, $how);
         }
 
         push $cmd->@*, $state_cmdline->@*;

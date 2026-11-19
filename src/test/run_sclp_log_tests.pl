@@ -17,6 +17,10 @@ my $dir = tempdir(CLEANUP => 1);
 $PVE::QemuServer::SclpLog::LOG_DIR = $dir;
 $PVE::QemuServer::Helpers::var_run_tmpdir = $dir;
 
+my $stopped_units = [];
+my $sclplog_module = Test::MockModule->new('PVE::QemuServer::SclpLog');
+$sclplog_module->mock(stop_unit => sub { push @$stopped_units, $_[0]; });
+
 my $vmid = 100;
 my $path = PVE::QemuServer::SclpLog::log_path($vmid);
 is($path, "$dir/100-sclplm.log", 'log path');
@@ -28,7 +32,7 @@ is_deeply(
     'no log yet',
 );
 
-PVE::QemuServer::SclpLog::prepare_start($vmid, 0);
+PVE::QemuServer::SclpLog::prepare_start($vmid, 'start');
 ok(-e $path, 'start creates the log');
 is(-s $path, 0, 'the first log starts empty');
 is((stat($path))[2] & 07777, 0640, 'log is not world-readable');
@@ -59,7 +63,7 @@ is($res->{data}, '', 'nothing beyond the end');
 $res = PVE::QemuServer::SclpLog::read_log($vmid, 0, undef, 10);
 is($res->{data}, "line 1\n", 'limit, whole lines');
 
-PVE::QemuServer::SclpLog::prepare_start($vmid, 1);
+PVE::QemuServer::SclpLog::prepare_start($vmid, 'resume');
 $res = PVE::QemuServer::SclpLog::read_log($vmid, 0);
 is($res->{id}, $id, 'resuming from a saved state continues the log');
 like(
@@ -68,7 +72,7 @@ like(
     'resume marker',
 );
 
-PVE::QemuServer::SclpLog::prepare_start($vmid, 0);
+PVE::QemuServer::SclpLog::prepare_start($vmid, 'start');
 $res = PVE::QemuServer::SclpLog::read_log($vmid, 0);
 isnt($res->{id}, $id, 'a fresh start begins a new log');
 like(
@@ -152,8 +156,84 @@ is_deeply(PVE::QemuServer::SclpLog::generations($vmid), [1, 2, 3], 'three genera
     ok(scalar(@$gens) >= 2 && scalar(@$gens) <= 4, 'oldest generations removed');
 }
 
+# resume and backup starts continue the log: one marker for a resume, none for a backup, no
+# rotation, and the forwarder keeps its position
+{
+    PVE::QemuServer::SclpLog::prepare_start($vmid, 'start');
+    PVE::QemuServer::SclpLog::append_log($vmid, "guest line\n");
+    my $state = PVE::QemuServer::SclpLog::state_file($vmid);
+    PVE::Tools::file_set_contents($state, "1 2\n");
+    my $gens = PVE::QemuServer::SclpLog::generations($vmid);
+    my $before = PVE::QemuServer::SclpLog::read_log($vmid, 0);
+
+    PVE::QemuServer::SclpLog::prepare_start($vmid, 'resume');
+    my $after = PVE::QemuServer::SclpLog::read_log($vmid, 0);
+    is($after->{id}, $before->{id}, 'resume: same file');
+    is_deeply(PVE::QemuServer::SclpLog::generations($vmid), $gens, 'resume: no rotation');
+    my $added = substr($after->{data}, length($before->{data}));
+    like($added, qr/^\x{2500}{4} VM resumed from a saved state at [^\n]+\n\z/, 'resume: one marker');
+    ok(-e $state, 'resume: forwarder position kept');
+
+    $before = $after;
+    PVE::QemuServer::SclpLog::prepare_start($vmid, 'backup');
+    $after = PVE::QemuServer::SclpLog::read_log($vmid, 0);
+    is($after->{id}, $before->{id}, 'backup start: same file');
+    is($after->{data}, $before->{data}, 'backup start: no marker');
+    is_deeply(PVE::QemuServer::SclpLog::generations($vmid), $gens, 'backup start: no rotation');
+    ok(-e $state, 'backup start: forwarder position kept');
+
+    eval { PVE::QemuServer::SclpLog::prepare_start($vmid, 1) };
+    like($@, qr/^unknown start type/, 'start type checked');
+
+    PVE::QemuServer::SclpLog::prepare_start($vmid, 'start');
+    ok(!-e $state, 'fresh start: forwarder starts over');
+    is_deeply(
+        PVE::QemuServer::SclpLog::generations($vmid),
+        [1 .. scalar(@$gens) + 1],
+        'fresh start: rotation',
+    );
+}
+
+# a backup start of a VM without a log creates it, not world-readable, without a marker
+{
+    my $other = 101;
+    PVE::QemuServer::SclpLog::prepare_start($other, 'backup');
+    my $p = PVE::QemuServer::SclpLog::log_path($other);
+    ok(-e $p && -s $p == 0, 'backup start without a log: empty log');
+    is((stat($p))[2] & 07777, 0640, 'backup start without a log: mode 0640');
+    PVE::QemuServer::SclpLog::remove_logs($other);
+}
+
+# the guest of a backup VM is started: one marker, only while QEMU is in prelaunch
+{
+    my $status = 'prelaunch';
+    $sclplog_module->mock(mon_cmd => sub { return { status => $status }; });
+    my $conf = { arch => 's390x', ostype => 'other' };
+    my $before = PVE::QemuServer::SclpLog::read_log($vmid, 0)->{data};
+    PVE::QemuServer::SclpLog::backup_vm_started($vmid, $conf);
+    my $data = PVE::QemuServer::SclpLog::read_log($vmid, 0)->{data};
+    like(
+        substr($data, length($before)),
+        qr/^\x{2500}{4} VM 100 started during a backup at [^\n]+\n\z/,
+        'start during a backup: marker',
+    );
+    $status = 'running';
+    PVE::QemuServer::SclpLog::backup_vm_started($vmid, $conf);
+    is(PVE::QemuServer::SclpLog::read_log($vmid, 0)->{data}, $data, 'already running: no marker');
+    $status = 'prelaunch';
+    PVE::QemuServer::SclpLog::backup_vm_started($vmid, { arch => 's390x', ostype => 'l26' });
+    is(PVE::QemuServer::SclpLog::read_log($vmid, 0)->{data}, $data, 'no line-mode console: no marker');
+    $sclplog_module->unmock('mon_cmd');
+}
+
+# destroy: all generations, the forwarder position and the lock go, the unit stops
+PVE::Tools::file_set_contents(PVE::QemuServer::SclpLog::state_file($vmid), "1 2\n");
+$stopped_units = [];
 PVE::QemuServer::SclpLog::remove_logs($vmid);
 ok(!-e $path && !scalar(PVE::QemuServer::SclpLog::generations($vmid)->@*), 'logs removed');
+ok(!-e PVE::QemuServer::SclpLog::state_file($vmid), 'forwarder position removed');
+ok(!-e "$dir/$vmid.sclplm.lock", 'lock file removed');
+is_deeply($stopped_units, [$vmid], 'unit stopped');
 
 # commands
 for my $bad ("a\rb", "a\nb", "\e[A", ' ', 'x' x 252) {

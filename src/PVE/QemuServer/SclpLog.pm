@@ -260,21 +260,32 @@ my sub create_log {
     close($fh);
 }
 
-# Prepare the log for a start of the VM. A fresh start (also the target of a migration, which gets
-# the log from the source) begins a new file; resuming from a saved state continues the log.
+# Prepare the log for a start of the VM, $how:
+#   'start'  - a fresh start (also the target of a migration, which gets the log from the source):
+#              a new file, the previous one becomes generation 1
+#   'resume' - resuming from a saved state (hibernation, rollback of a snapshot with RAM): the log
+#              continues, with one marker line
+#   'backup' - the paused start of a stopped VM for a backup, which does not run the guest: the
+#              log continues, without a marker (QEMU writes the IPL marker only if the guest runs)
+# The position of the forwarder (state_file()) is kept when the log continues, so the syslog
+# server does not get the log again.
 sub prepare_start {
-    my ($vmid, $resume_from_state) = @_;
+    my ($vmid, $how) = @_;
+
+    $how //= 'start';
+    die "unknown start type '$how'\n" if $how !~ m/^(?:start|resume|backup)$/;
 
     mkdir($LOG_DIR, 0755) if !-d $LOG_DIR;
-    unlink(state_file($vmid));
 
     lock_logs(
         $vmid,
         sub {
-            if ($resume_from_state && -e log_path($vmid)) {
-                append_log($vmid, marker_line("VM resumed from a saved state"));
+            if ($how ne 'start' && -e log_path($vmid)) {
+                append_log($vmid, marker_line("VM resumed from a saved state"))
+                    if $how eq 'resume';
                 return;
             }
+            unlink(state_file($vmid));
             my $had_log = -s log_path($vmid);
             shift_generations($vmid) if -e log_path($vmid);
             create_log(
@@ -287,10 +298,29 @@ sub prepare_start {
     );
 }
 
+# The guest of a VM started paused for a backup is started (in the QEMU of the backup): mark the
+# start in the log, which continued without a marker (see prepare_start()). QEMU adds the IPL marker
+# when the guest runs.
+sub backup_vm_started {
+    my ($vmid, $conf) = @_;
+
+    eval {
+        return if !has_hardcopy($conf) || !-e log_path($vmid);
+        my $status = mon_cmd($vmid, 'query-status');
+        return if ($status->{status} // '') ne 'prelaunch';
+        append_log($vmid, marker_line("VM $vmid started during a backup"));
+    };
+    warn $@ if $@;
+}
+
+# Remove the log files of a VM (destroy). Also stops the unit that follows them.
 sub remove_logs {
     my ($vmid) = @_;
+
+    stop_unit($vmid);
     unlink(log_path($vmid), map { log_path($vmid, $_) } generations($vmid)->@*);
     unlink(state_file($vmid));
+    unlink(lock_file($vmid));
 }
 
 # Identifies a log file for readers that follow it: its inode and its first line (a new file at a
