@@ -109,7 +109,42 @@ is(
     'virtual-lpar-a',
     'new s390x VMs get the first mainframe machine type',
 );
-delete $machine_types->@{qw(virtual-lpar-a virtual-lpar-b)};
+# a versioned mainframe machine type with an alias to its newest version, and a deprecated alias
+# (an old name) that existing configurations keep using
+$machine_types = {
+    'none' => 'empty machine',
+    's390-ccw-virtio' => 'Virtual s390x machine (version 11.1) (alias of s390-ccw-virtio-11.1)',
+    's390-ccw-virtio-11.1' => 'Virtual s390x machine (version 11.1) (default)',
+    'czam-v1' => 'CZAM hardware mode (version 1)',
+    'czam' => 'CZAM hardware mode (version 1) (alias of czam-v1)',
+    'aaa-old' => 'Old name (alias of czam-v1) (deprecated)',
+};
+is_deeply(
+    [sort keys PVE::QemuServer::Machine::s390x_mainframe_machine_types('/usr/bin/kvm')->%*],
+    [qw(czam czam-v1)],
+    'mainframe machine types for new configurations, without deprecated ones',
+);
+is(
+    PVE::QemuServer::Machine::default_new_machine_for_arch('s390x', '/usr/bin/kvm'),
+    'czam',
+    'new s390x VMs get the alias of the newest version of a versioned mainframe machine type',
+);
+is(
+    PVE::QemuServer::Machine::s390x_machine_class('aaa-old'),
+    'mainframe',
+    'a deprecated mainframe machine type of existing configurations is still mainframe class',
+);
+is(
+    PVE::QemuServer::Machine::get_vm_machine({ machine => 'aaa-old', arch => 's390x' }),
+    'aaa-old',
+    'a deprecated alias is passed to QEMU as configured',
+);
+is(
+    PVE::QemuServer::Machine::get_vm_machine({ machine => 'czam', arch => 's390x' }, 'czam-v1'),
+    'czam-v1',
+    'the running version of a mainframe machine type is kept (migration, resume)',
+);
+delete $machine_types->@{qw(czam czam-v1 aaa-old)};
 is(
     PVE::QemuServer::Machine::default_new_machine_for_arch('s390x', '/usr/bin/kvm'),
     's390-ccw-virtio',

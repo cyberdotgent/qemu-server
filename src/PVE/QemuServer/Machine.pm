@@ -203,8 +203,10 @@ sub s390x_machine_class {
 
     my $types = s390x_mainframe_machine_types($kvm_binary);
 
-Returns a hash of the mainframe class machine types the QEMU binary offers, with their description as
-value. See C<s390x_machine_class()>. QEMU's C<none> and experimental C<x-> machine types are left out.
+Returns a hash of the mainframe class machine types the QEMU binary offers for new configurations,
+with their description as value. See C<s390x_machine_class()>. QEMU's C<none> and experimental
+C<x-> machine types are left out, and so are deprecated ones (old names QEMU keeps as aliases for
+existing configurations, which still work and are still of the mainframe class).
 
 =cut
 
@@ -214,7 +216,12 @@ sub s390x_mainframe_machine_types {
     my $types = PVE::QemuServer::Helpers::kvm_machine_types($kvm_binary);
     return {
         map { $_ => $types->{$_} }
-            grep { $_ ne 'none' && !m/^x-/ && is_unversioned_machine_type($_) } keys %$types
+            grep {
+                $_ ne 'none'
+                    && !m/^x-/
+                    && is_unversioned_machine_type($_)
+                    && $types->{$_} !~ m/\(deprecated\)/
+            } keys %$types
     };
 }
 
@@ -222,9 +229,12 @@ sub s390x_mainframe_machine_types {
 
     my $machine = default_new_machine_for_arch($arch, $kvm_binary);
 
-Returns the machine type for a new VM without a configured one. On s390x, that is the first mainframe
-class machine type the QEMU binary offers, if any, as it can run both Linux and mainframe operating
-systems. Otherwise, and on other architectures, it is the default machine of the architecture.
+Returns the machine type for a new VM without a configured one. On s390x, that is a mainframe class
+machine type of the QEMU binary, if it offers one, as it can run both Linux and mainframe operating
+systems. A versioned mainframe machine type has an alias that always points to its newest version
+(like 's390-ccw-virtio'): the alias is preferred. The VM keeps running with the version it started
+with, the running machine is pinned like for the other machine types (C<runningmachine>, migration).
+Otherwise, and on other architectures, it is the default machine of the architecture.
 
 =cut
 
@@ -234,7 +244,10 @@ sub default_new_machine_for_arch {
     if ($arch eq 's390x') {
         $kvm_binary //= PVE::QemuServer::Helpers::get_command_for_arch($arch);
         my $types = eval { s390x_mainframe_machine_types($kvm_binary) } // {};
-        my ($first) = sort keys %$types;
+        my @aliases = grep {
+            $types->{$_} =~ m/\(alias of ([^)\s]+)\)/ && defined($types->{$1})
+        } sort keys %$types;
+        my ($first) = (@aliases, sort keys %$types);
         return $first if defined($first);
     }
 
