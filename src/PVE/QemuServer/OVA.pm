@@ -435,6 +435,8 @@ sub ovf_descriptor {
         next if !$pve_section_keys->{$key} && $key !~ $pve_section_key_re;
         next if ref($conf->{$key});
         my $value = $conf->{$key};
+        # s390x VMs (mostly DASDs) carry the SCSI controller only if they have SCSI disks
+        next if $key eq 'scsihw' && $arch eq 's390x' && !grep { m/^scsi\d+$/ } keys %exported;
         if ($key eq 'boot') {
             # only the devices that are exported
             next if $value !~ m/^order=([^,]*)$/;

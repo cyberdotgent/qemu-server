@@ -975,8 +975,11 @@ __PACKAGE__->register_method({
         my $imported_disks = [];
         eval {
             # order matters, as do_import() will load_config() internally
-            $conf->{vmgenid} = PVE::QemuServer::generate_uuid();
-            $conf->{smbios1} = PVE::QemuServer::generate_smbios1_uuid();
+            # s390x VMs have neither ACPI (VM generation ID) nor SMBIOS
+            if (PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x') {
+                $conf->{vmgenid} = PVE::QemuServer::generate_uuid();
+                $conf->{smbios1} = PVE::QemuServer::generate_smbios1_uuid();
+            }
             PVE::QemuConfig->write_config($vmid, $conf);
 
             foreach my $disk (@{ $parsed->{disks} }) {

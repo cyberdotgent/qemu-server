@@ -1988,14 +1988,17 @@ __PACKAGE__->register_method({
 
                     PVE::QemuServer::Drive::warn_about_virtio_win_issues_in_config($conf);
 
-                    # auto generate uuid if user did not specify smbios1 option
-                    if (!$conf->{smbios1}) {
+                    # auto generate uuid if user did not specify smbios1 option (s390x has no
+                    # SMBIOS)
+                    if (!$conf->{smbios1} && $arch ne 's390x') {
                         $conf->{smbios1} = PVE::QemuServer::generate_smbios1_uuid();
                     }
 
+                    # s390x has no ACPI for the VM generation ID device
                     if (
                         (!defined($conf->{vmgenid}) || $conf->{vmgenid} eq '1')
                         && $arch ne 'aarch64'
+                        && $arch ne 's390x'
                     ) {
                         $conf->{vmgenid} = PVE::QemuServer::generate_uuid();
                     }
@@ -5489,10 +5492,12 @@ __PACKAGE__->register_method({
 
             my $storecfg = PVE::Storage::config();
 
-            # auto generate a new uuid
-            my $smbios1 = PVE::QemuServer::parse_smbios1($newconf->{smbios1} || '');
-            $smbios1->{uuid} = PVE::QemuServer::generate_uuid();
-            $newconf->{smbios1} = PVE::QemuServer::print_smbios1($smbios1);
+            # auto generate a new uuid (s390x VMs have no SMBIOS, only if they have the option)
+            if ($newconf->{smbios1} || PVE::QemuServer::Helpers::get_vm_arch($newconf) ne 's390x') {
+                my $smbios1 = PVE::QemuServer::parse_smbios1($newconf->{smbios1} || '');
+                $smbios1->{uuid} = PVE::QemuServer::generate_uuid();
+                $newconf->{smbios1} = PVE::QemuServer::print_smbios1($smbios1);
+            }
             # auto generate a new vmgenid only if the option was set for template
             if ($newconf->{vmgenid}) {
                 $newconf->{vmgenid} = PVE::QemuServer::generate_uuid();
