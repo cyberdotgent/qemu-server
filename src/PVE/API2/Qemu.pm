@@ -2560,6 +2560,8 @@ __PACKAGE__->register_method({
     name => 'sclp_log',
     path => '{vmid}/sclp-log',
     method => 'GET',
+    # the log is readable by root only (it has the operator commands)
+    protected => 1,
     proxyto => 'node',
     description => "Read the hardcopy of the SCLP line-mode console of an s390x VM: every message"
         . " of the guest since the VM was started, and a marker line for every IPL. Without"
@@ -2701,6 +2703,8 @@ __PACKAGE__->register_method({
     name => 'ipl_devices',
     path => '{vmid}/ipl-devices',
     method => 'GET',
+    # looks at the volumes (SCSI pass-through needs the device nodes) and runs QEMU
+    protected => 1,
     proxyto => 'node',
     description => "Get the devices an s390x VM can IPL (boot) from, as candidates for the"
         . " 'ipl' option. Includes pending changes.",

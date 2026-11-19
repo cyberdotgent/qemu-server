@@ -848,4 +848,13 @@ subtest 's390x hosts run s390x VMs only' => sub {
     is($@, '', 'other hosts are not affected');
 };
 
+# The s390x API methods that read root-only files, run QEMU or connect to its sockets run in
+# pvedaemon (sclp-log ran as www-data in pveproxy and could not read the log)
+subtest 's390x methods run privileged' => sub {
+    for my $name (qw(sclp_log sclp_command ipl_devices export_ova)) {
+        my $info = PVE::API2::Qemu->map_method_by_name($name);
+        ok($info && $info->{protected}, "$name is protected");
+    }
+};
+
 done_testing();
