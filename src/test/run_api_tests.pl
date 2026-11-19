@@ -13,6 +13,7 @@ use Test::MockModule;
 use Test::More;
 
 use PVE::API2::Qemu;
+use PVE::CLI::qm;
 use PVE::CLI::qmrestore;
 use PVE::GuestIdentity;
 use PVE::RPCEnvironment;
@@ -940,6 +941,22 @@ subtest 'default import working storage' => sub {
     is($resolve->({ ckd0 => "local-zfs:0,import-from=$ova" }), undef,
         'plain, no images storage at all: source storage');
     %$ids = %$saved;
+};
+
+# 'qm import' gives copies (OVA, OVF) new MAC addresses by default, not moved guests
+subtest 'import source is a copy' => sub {
+    my $storage = Test::MockModule->new('PVE::Storage');
+    $storage->mock(
+        parse_volname => sub {
+            my ($cfg, $volid) = @_;
+            die "unable to parse '$volid'\n" if $volid !~ m/\.(ova|ovf|vmx)$/;
+            return ('import', $volid, undef, undef, undef, undef, $1);
+        },
+    );
+    ok(PVE::CLI::qm::import_source_is_copy({}, 'local:import/mf01.ova'), 'OVA');
+    ok(PVE::CLI::qm::import_source_is_copy({}, 'local:import/x/deb.ovf'), 'OVF');
+    ok(!PVE::CLI::qm::import_source_is_copy({}, 'esxi:ha/dc/ds/vm/vm.vmx'), 'ESXi guest');
+    ok(!PVE::CLI::qm::import_source_is_copy({}, 'nonsense'), 'unparsable');
 };
 
 # the s390x default SCSI controller only goes into a copy of the config
