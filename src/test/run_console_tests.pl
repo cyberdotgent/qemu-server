@@ -147,9 +147,21 @@ is_deeply(
         '-secure',
         '-model',
         '3279-4',
+        '-xrm',
+        'c3270.suppressActions: Quit Exit Disconnect Close Open Reconnect Execute Script'
+            . ' Source Macro Prompt Set Printer PrintText Transfer Trace ScreenTrace',
+        '-xrm',
+        'c3270.menuBar: true',
+        '-xrm',
+        'c3270.mouse: true',
         'U:/var/run/qemu-server/100.terminal1',
     ],
-    'session command: c3270 with the model, restarted',
+    'session command: c3270 with the model, menu bar and mouse, restricted, restarted',
+);
+is_deeply(
+    [map { PVE::QemuServer::Console3270::window_size($_) } 2 .. 5],
+    [[27, 80], [35, 80], [46, 80], [30, 132]],
+    'window sizes: 3270 screen, c3270 menu bar and status line',
 );
 is_deeply(
     PVE::QemuServer::Console3270::attach_command(100, '3270'),

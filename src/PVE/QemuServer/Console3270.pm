@@ -21,8 +21,23 @@ use PVE::QemuServer::Helpers;
 
 our $TMUX_CONFIG = '/usr/share/qemu-server/3270-tmux.conf';
 
-# The screen sizes of the 3270 models, c3270 needs one more row for its status line.
+# The screen sizes of the 3270 models.
 my $model_sizes = { 2 => [24, 80], 3 => [32, 80], 4 => [43, 80], 5 => [27, 132] };
+
+# The rows of the window of a session besides the 3270 screen: c3270 shows its menu bar in the two
+# rows above the screen and its status line below it.
+my $extra_rows = 3;
+
+# The c3270 actions that the viewers must not be able to run, from the menus or with keys of the
+# default keymap: those that end or change the connection, run commands, scripts or macros, write
+# files or print. The c3270 option -secure already removes most of them from the menus and the
+# c3270> prompt, but not Disconnect and Quit. Connect stays, c3270 connects to the host with it; no
+# menu and no key of the default keymap runs it.
+my $suppressed_actions = [
+    qw(Quit Exit Disconnect Close Open Reconnect),
+    qw(Execute Script Source Macro Prompt Set),
+    qw(Printer PrintText Transfer Trace ScreenTrace),
+];
 
 # The model of the integrated 3270 console and of terminals without a configured model. It is
 # fixed for the lifetime of the VM, so use the one every 3270 application supports.
@@ -80,8 +95,16 @@ my sub has_session {
     return defined($res) && $res == 0;
 }
 
+# The size of the window of the session of a 3270 console, [rows, columns].
+sub window_size {
+    my ($model) = @_;
+    my ($rows, $cols) = $model_sizes->{$model}->@*;
+    return [$rows + $extra_rows, $cols];
+}
+
 # The command of the session of a 3270 console: c3270 with a fixed model, restarted should it
-# ever exit, for example when it lost the connection.
+# ever exit, for example when it lost the connection. Viewers can use its menu bar, keypad and the
+# mouse, but not quit it, disconnect it or get to a shell.
 sub session_command {
     my ($vmid, $iface, $model) = @_;
 
@@ -94,6 +117,12 @@ sub session_command {
         '-secure', # no c3270 prompt, viewers must not be able to quit or reconfigure it
         '-model',
         "3279-$model",
+        '-xrm',
+        'c3270.suppressActions: ' . join(' ', $suppressed_actions->@*),
+        '-xrm',
+        'c3270.menuBar: true',
+        '-xrm',
+        'c3270.mouse: true',
         "U:$socket",
     ];
 }
@@ -109,7 +138,7 @@ sub create_sessions {
         next if has_session($vmid, $iface);
 
         my $model = $consoles->{$iface};
-        my ($rows, $cols) = $model_sizes->{$model}->@*;
+        my ($rows, $cols) = window_size($model)->@*;
         # The window keeps the size of the 3270 screen whatever the size of the viewers. Set per
         # window: tmux 3.5a crashes creating sessions with a global 'window-size manual'.
         run_command(tmux_command(
@@ -123,7 +152,7 @@ sub create_sessions {
             '-x',
             $cols,
             '-y',
-            $rows + 1,
+            $rows,
             session_command($vmid, $iface, $model)->@*,
             ';',
             'set-option',

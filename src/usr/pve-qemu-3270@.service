@@ -7,6 +7,7 @@ After=%i.scope
 Slice=qemu.slice
 Type=oneshot
 RemainAfterExit=yes
-Environment=LANG=C.UTF-8 HOME=/root
+# c3270 reads no profile, and the pager of its information screens runs no commands
+Environment=LANG=C.UTF-8 HOME=/root NOC3270PRO=1 LESSSECURE=1
 ExecStart=/usr/libexec/qemu-server/3270-sessions %i
 ExecReload=/usr/libexec/qemu-server/3270-sessions %i
