@@ -533,22 +533,72 @@ my %dasd_fmt = (
     # storage arrays offered it for old operating systems.
     devtype => {
         type => 'string',
-        pattern => '[0-9a-fA-F]{4}(?:-[0-9a-fA-F]{2})?',
-        format_description => 'type[-model]',
-        description => "Expert option: the device type (and model) the guest sees in the device"
-            . " identification, hexadecimal, for example '3380' or '3380-0e', instead of the"
-            . " emulated device's. The geometry and the commands stay those of the emulated"
-            . " device. Needs a QEMU build with the 'device-type' property of the DASD device.",
+        format => 'pve-qm-dasd-identity',
+        format_description => 'TTTT[-MM]',
+        description => "Expert option: the device type the guest sees in the device"
+            . " identification (Sense ID), instead of the emulated device's: the type in hex"
+            . " and optionally the model, as a model name (3380-A, -D, -J, -E, -K; 3390-1, -2,"
+            . " -3, -9, -27, -54, -A) or as the model byte of the Sense ID in hex (two digits,"
+            . " for example 3380-1e). Without a model, QEMU derives it for 3380 and 3390 from the"
+            . " cylinders. The geometry and the commands stay those of the emulated device."
+            . " Needs a QEMU build with the 'device-type' property of the DASD device.",
         optional => 1,
     },
     cutype => {
         type => 'string',
-        pattern => '[0-9a-fA-F]{4}(?:-[0-9a-fA-F]{2})?',
-        format_description => 'type[-model]',
-        description => "Expert option: the control unit type (and model) the guest sees in the"
-            . " device identification, hexadecimal, for example '3990-ec'. Needs a QEMU build"
-            . " with the 'control-unit-type' property of the DASD device.",
+        format => 'pve-qm-dasd-identity',
+        format_description => 'TTTT[-MM]',
+        description => "Expert option: the control unit type the guest sees in the device"
+            . " identification (Sense ID): the type in hex and optionally the model, as a model"
+            . " name (3990-6) or as the model byte of the Sense ID in hex (two digits, for"
+            . " example 3990-e9, 2107-e8). Without a model, QEMU derives it for 2105, 2107 (E8)"
+            . " and 3990 (E9, the 3990-6). Needs a QEMU build with the 'control-unit-type'"
+            . " property of the DASD device.",
         optional => 1,
+    },
+);
+
+# The model names of the DASD identity override ('devtype', 'cutype'): the Sense ID model bytes of
+# the usual designations (as QEMU derives them from the cylinders, see QEMU-mod's eckd-ccw).
+# 3390-9, -27, -54 and -A all report 0x0c. A name takes precedence over a hex byte of the same
+# spelling (3390-27 is the model 27, not the byte 0x27).
+my $dasd_model_names = {
+    3380 => { A => 0x02, D => 0x02, J => 0x02, E => 0x0a, K => 0x1e },
+    3390 => { 1 => 0x02, 2 => 0x06, 3 => 0x0a, 9 => 0x0c, 27 => 0x0c, 54 => 0x0c, A => 0x0c },
+    3990 => { 6 => 0xe9 },
+};
+
+# Parse a DASD identity 'TTTT[-MM]': returns the type and the model (undef: derived), as numbers.
+sub parse_dasd_identity {
+    my ($value) = @_;
+
+    my ($type, $model) = $value =~ m/^([0-9a-fA-F]{4})(?:-([0-9a-zA-Z]{1,2}))?$/
+        or die "invalid identity '$value', expected TTTT[-MM] (type in hex, model)\n";
+    return (hex($type), undef) if !defined($model);
+    my $names = $dasd_model_names->{ lc($type) } // {};
+    my $byte = $names->{ uc($model) };
+    if (!defined($byte)) {
+        die "unknown model '$model' of $type, expected "
+            . (%$names ? join(', ', sort keys %$names) . ' or ' : '')
+            . "the model byte in hex (two digits)\n"
+            if $model !~ m/^[0-9a-fA-F]{2}$/;
+        $byte = hex($model);
+    }
+    die "invalid model '$model' of $type: the model byte 00 means 'derive', leave it out\n"
+        if !$byte;
+    return (hex($type), $byte);
+}
+
+PVE::JSONSchema::register_format(
+    'pve-qm-dasd-identity',
+    sub {
+        my ($value, $noerr) = @_;
+        eval { parse_dasd_identity($value) };
+        if (my $err = $@) {
+            return undef if $noerr;
+            die $err;
+        }
+        return $value;
     },
 );
 

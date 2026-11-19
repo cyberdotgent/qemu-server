@@ -16,6 +16,7 @@ use warnings;
 use File::Temp;
 
 use PVE::Storage;
+use PVE::QemuServer::Drive;
 use PVE::QemuServer::Helpers;
 use PVE::Tools qw(run_command);
 
@@ -377,10 +378,9 @@ sub dasd_volume_name {
 }
 
 # The QEMU device properties of the identity override of a DASD (drive options 'devtype' and
-# 'cutype', type and optional model in hex), as a string to append to the device. They need a QEMU
-# build whose eckd-ccw and fba-ccw devices have the properties (named like those of the 3270
-# device of QEMU-mod).
-# TODO: confirm the property names once QEMU-mod has them for the DASD devices.
+# 'cutype', type and optional model, see PVE::QemuServer::Drive::parse_dasd_identity()), as a
+# string to append to the device. They need a QEMU-mod build whose eckd-ccw and fba-ccw devices
+# have the properties (uint16 type, uint8 model; model 0, left out here, is derived by QEMU).
 my $identity_properties = {
     devtype => ['device-type', 'device-model'],
     cutype => ['control-unit-type', 'control-unit-model'],
@@ -398,10 +398,10 @@ sub identity_properties {
         die "$drive_id: '$opt' needs a QEMU with the '$type_prop' property of the $device device,"
             . " the installed one does not have it\n"
             if !PVE::QemuServer::Helpers::kvm_device_has_property($binary, $device, $type_prop);
-        my ($type, $model) = $drive->{$opt} =~ m/^([0-9a-f]{4})(?:-([0-9a-f]{2}))?$/i
-            or die "$drive_id: invalid $opt '$drive->{$opt}'\n";
-        $res .= ",$type_prop=" . hex($type);
-        $res .= ",$model_prop=" . hex($model) if defined($model);
+        my ($type, $model) = eval { PVE::QemuServer::Drive::parse_dasd_identity($drive->{$opt}) };
+        die "$drive_id: $opt: $@" if $@;
+        $res .= ",$type_prop=$type";
+        $res .= ",$model_prop=$model" if defined($model);
     }
     return $res;
 }

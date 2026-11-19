@@ -423,6 +423,7 @@ like($@, qr/need 'model' or 'cylinders'/, 'generic 3390 model needs cylinders');
         kvm_device_has_property => sub { $props->{"$_[1].$_[2]"} ? 1 : 0 },
     );
     my $drive = { interface => 'ckd', devtype => '3380-0e', cutype => '3990' };
+    my $named = { interface => 'ckd', devtype => '3380-K', cutype => '3990-6' };
     eval { PVE::QemuServer::DASD::identity_properties('ckd0', $drive, 's390x') };
     like($@, qr/^ckd0: 'cutype' needs a QEMU with the 'control-unit-type' property/, 'no QEMU support');
     $props = { map { $_ => 1 } qw(eckd-ccw.device-type eckd-ccw.control-unit-type) };
@@ -431,8 +432,53 @@ like($@, qr/need 'model' or 'cylinders'/, 'generic 3390 model needs cylinders');
         ',control-unit-type=' . 0x3990 . ',device-type=' . 0x3380 . ',device-model=14',
         'identity properties',
     );
+    is(
+        PVE::QemuServer::DASD::identity_properties('ckd0', $named, 's390x'),
+        ',control-unit-type=' . 0x3990 . ',control-unit-model=' . 0xe9
+            . ',device-type=' . 0x3380 . ',device-model=' . 0x1e,
+        'identity properties of model names',
+    );
     is(PVE::QemuServer::DASD::identity_properties('ckd0', { interface => 'ckd' }, 's390x'), '',
         'no identity override');
+}
+
+# identity syntax TTTT[-MM]: model names of the usual designations or the Sense ID model byte in hex
+# (3380-K and 3990-6 were refused)
+for my $test (
+    ['3380', 0x3380, undef],
+    ['3380-K', 0x3380, 0x1e],
+    ['3380-k', 0x3380, 0x1e],
+    ['3380-E', 0x3380, 0x0a],
+    ['3380-J', 0x3380, 0x02],
+    ['3380-1e', 0x3380, 0x1e],
+    ['3390-9', 0x3390, 0x0c],
+    ['3390-3', 0x3390, 0x0a],
+    ['3390-27', 0x3390, 0x0c], # the name, not the byte 0x27
+    ['3390-0c', 0x3390, 0x0c],
+    ['3990-6', 0x3990, 0xe9],
+    ['3990-ec', 0x3990, 0xec],
+    ['2107-E8', 0x2107, 0xe8],
+    ['9336-10', 0x9336, 0x10],
+) {
+    my ($value, $type, $model) = @$test;
+    is_deeply([PVE::QemuServer::Drive::parse_dasd_identity($value)], [$type, $model], "identity $value");
+}
+for my $test (
+    ['3380-X', qr/^unknown model 'X' of 3380, expected A, D, E, J, K or the model byte/],
+    ['3390-5', qr/^unknown model '5' of 3390/],
+    ['3380-00', qr/model byte 00 means 'derive'/],
+    ['338', qr/^invalid identity/],
+    ['3380-ABC', qr/^invalid identity/],
+    ['9336-Z', qr/^unknown model 'Z' of 9336, expected the model byte in hex/],
+) {
+    my ($value, $re) = @$test;
+    eval { PVE::QemuServer::Drive::parse_dasd_identity($value) };
+    like($@, $re, "identity $value refused");
+}
+{
+    my $drive = PVE::QemuServer::Drive::parse_drive('ckd0', 'local:1,devtype=3380-K,cutype=3990-6');
+    ok($drive, 'drive with devtype=3380-K,cutype=3990-6 parses');
+    ok(!PVE::QemuServer::Drive::parse_drive('ckd0', 'local:1,devtype=3380-X'), 'unknown model refused');
 }
 
 # names of DASD volumes kept on import, restore and migration
