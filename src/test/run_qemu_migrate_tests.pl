@@ -1846,6 +1846,53 @@ my $tests = [
         },
     },
     {
+        # s390x: a network boot that was used (pending deletion) is not needed on the target
+        name => '300_running_netboot_used',
+        target => 'pve1',
+        vmid => 300,
+        vm_status => {
+            running => 1,
+            runningmachine => 's390-ccw-virtio-11.0+pve0',
+        },
+        opts => {
+            online => 1,
+            'with-local-disks' => 1,
+        },
+        config_patch => {
+            netboot => 'https://example.com/generic.ins,'
+                . 'kernel=local:snippets/netboot-0123456789ab.kernel',
+            'netboot-cmdline' => 'ro',
+            pending => { delete => 'netboot,netboot-cmdline' },
+        },
+        expected_calls => {
+            %{$default_expected_calls_online},
+            ssh_start_3270_sessions => 1,
+        },
+        expected => {
+            source_volids => {},
+            target_volids => {
+                'local-lvm:vm-300-SYSRS1' => 1,
+                'local-dir:300/vm-300-disk-10.raw' => 1,
+            },
+            vm_config => get_patched_config(
+                300,
+                {
+                    ckd0 => 'local-lvm:vm-300-SYSRS1,cylinders=1113,devno=0.0.0200,format=raw,'
+                        . 'size=948863488',
+                    fba0 => 'local-dir:300/vm-300-disk-10.raw,devno=0.0.0300,format=raw,size=1G',
+                    netboot => 'https://example.com/generic.ins,'
+                        . 'kernel=local:snippets/netboot-0123456789ab.kernel',
+                    'netboot-cmdline' => 'ro',
+                    pending => { delete => 'netboot,netboot-cmdline' },
+                },
+            ),
+            vm_status => {
+                running => 1,
+                runningmachine => 's390-ccw-virtio-11.0+pve0',
+            },
+        },
+    },
+    {
         # the target frees the volumes it allocated if it does not start
         name => '300_running_dasd_target_start_fail',
         target => 'pve1',

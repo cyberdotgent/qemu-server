@@ -164,6 +164,10 @@ $dasd_module->mock(
 
 $MigrationTest::Shared::qemu_server_module->mock(
     config_to_command => sub {
+        my ($storecfg, $vmid, $conf) = @_;
+        # the files of a network boot are on the (local) snippets storage of the source
+        die "config_to_command (mocked) - netboot files are not on the target\n"
+            if $conf->{netboot};
         return ['mocked_kvm_command'];
     },
     mon_cmd => \&mocked_mon_cmd,

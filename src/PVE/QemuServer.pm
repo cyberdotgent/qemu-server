@@ -5999,6 +5999,14 @@ sub vm_start_nolock {
         }
     }
 
+    # A network boot that was used once is removed at the next start (pending deletion). A live
+    # migration target does not boot, the guest comes from the source, and must not need its
+    # files: the snippets storage holding them is usually local to the source node.
+    if ($migratedfrom && $conf->{netboot}) {
+        my $pending_delete = PVE::QemuConfig->parse_pending_delete($conf->{pending}->{delete});
+        delete $conf->@{qw(netboot netboot-cmdline)} if $pending_delete->{netboot};
+    }
+
     my $defaults = load_defaults();
 
     # set environment variable useful inside network script
