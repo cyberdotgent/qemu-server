@@ -129,4 +129,39 @@ for my $test ($tests->@*) {
     }
 }
 
+# the status fields: a disabled wait of an s390x CPU is told apart, other crashes are not
+is_deeply(PVE::QemuServer::guest_panic_status_fields(undef), {}, 'no crash information');
+my $wait = {
+    type => 's390',
+    core => 0,
+    'psw-mask' => '0002000180000000',
+    'psw-addr' => '0000000000000ccc',
+    reason => 'disabled-wait',
+};
+is_deeply(
+    PVE::QemuServer::guest_panic_status_fields($wait),
+    { 'panic-info' => $wait, 'disabled-wait' => '0000000000000ccc' },
+    's390x disabled wait: PSW address',
+);
+my $loop = { %$wait, reason => 'pgmint-loop' };
+is_deeply(
+    PVE::QemuServer::guest_panic_status_fields($loop),
+    { 'panic-info' => $loop },
+    's390x program interrupt loop: no disabled wait',
+);
+my $hyperv = { type => 'hyper-v', map { ("arg$_" => '0000000000000001') } 1 .. 5 };
+is_deeply(
+    PVE::QemuServer::guest_panic_status_fields($hyperv),
+    { 'panic-info' => $hyperv },
+    'Hyper-V crash: no disabled wait',
+);
+{
+    my $fields = PVE::QemuServer::guest_panic_status_fields($wait);
+    for my $key (sort keys $fields->%*) {
+        my $schema = $PVE::QemuServer::vmstatus_return_properties->{$key};
+        eval { PVE::JSONSchema::validate($fields->{$key}, $schema) };
+        is($@, '', "status field '$key' matches the API schema");
+    }
+}
+
 done_testing();
