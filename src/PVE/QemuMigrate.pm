@@ -950,7 +950,7 @@ sub phase1_remote {
             # the new volume of a CKD DASD needs its header before the target starts
             if ($ds =~ m/^ckd\d+$/) {
                 my $header = PVE::QemuServer::DASD::ckd_volume_header_for_migration(
-                    $self->{storecfg}, $volid,
+                    $self->{storecfg}, $volid, $drive->{cylinders},
                 );
                 $params->{'ckd-header'} = unpack('H*', $header);
             }
@@ -1090,8 +1090,10 @@ sub phase2_start_local_cluster {
     for my $volid ($self->filter_local_volumes('online', 0)) {
         my $drivename = $local_volumes->{$volid}->{drivename};
         next if !$drivename || $drivename !~ m/^ckd\d+$/;
-        my $header =
-            PVE::QemuServer::DASD::ckd_volume_header_for_migration($self->{storecfg}, $volid);
+        my $drive = PVE::QemuServer::Drive::parse_drive($drivename, $conf->{$drivename});
+        my $header = PVE::QemuServer::DASD::ckd_volume_header_for_migration(
+            $self->{storecfg}, $volid, $drive ? $drive->{cylinders} : undef,
+        );
         $input .= "ckd_header: $drivename: " . unpack('H*', $header) . "\n";
     }
 

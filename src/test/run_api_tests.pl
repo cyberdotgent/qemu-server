@@ -619,8 +619,8 @@ subtest 's390x: importing a DASD from a storage volume' => sub {
     like($@, qr/checked/, 'reached the check of the source image');
     is_deeply(
         $args,
-        ['/var/lib/vz/import/x.ckd', 'raw', 2846431744],
-        'path, format and size of the source image',
+        ['/var/lib/vz/import/x.ckd', 'raw', 2846431744, undef],
+        'path, format and size of the source image, no cylinders given',
     );
 
     mock_unreachable_config();

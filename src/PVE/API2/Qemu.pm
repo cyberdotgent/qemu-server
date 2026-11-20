@@ -718,11 +718,13 @@ my sub create_disks : prototype($$$$$$$$$$$) {
     # storage $storeid with the format $format can hold a CKD image. Returns the
     # parsed header of a CKD image.
     my $check_dasd_import_source = sub {
-        my ($ds, $path, $format, $size, $storeid, $target_format) = @_;
+        my ($ds, $path, $format, $size, $storeid, $target_format, $cylinders) = @_;
 
         die "$ds: could not get the size of '$path'\n" if !$size;
         if ($ds =~ m/^ckd/) {
-            my $header = PVE::QemuServer::DASD::check_ckd_import_source($path, $format, $size);
+            my $header = PVE::QemuServer::DASD::check_ckd_import_source(
+                $path, $format, $size, $cylinders,
+            );
             PVE::QemuServer::DASD::assert_ckd_target_storage(
                 $storecfg, $storeid, $target_format, $header, $ds,
             );
@@ -745,8 +747,9 @@ my sub create_disks : prototype($$$$$$$$$$$) {
         return $header->{size};
     };
 
-    # An existing volume attached as DASD. Unless it is the volume the drive has already, check it
-    # (and complete the CKD header).
+    # An existing volume attached as DASD. Unless it is the volume the drive has already, check it.
+    # The header of a CKD volume is not changed: its cylinders are those of the header, or the
+    # given 'cylinders' if it has no count, or those of its length.
     my $check_dasd_volume = sub {
         my ($ds, $disk, $size) = @_;
 
@@ -759,7 +762,9 @@ my sub create_disks : prototype($$$$$$$$$$$) {
         }
 
         if ($ds =~ m/^ckd/) {
-            my $header = PVE::QemuServer::DASD::check_ckd_volume($storecfg, $disk->{file});
+            my $header = PVE::QemuServer::DASD::check_ckd_volume(
+                $storecfg, $disk->{file}, $disk->{cylinders},
+            );
             $disk->{cylinders} = $header->{cylinders};
         } else {
             die "$ds: the size of an FBA volume must be a multiple of 512 bytes\n"
@@ -928,6 +933,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                             PVE::QemuServer::resolve_dst_disk_format(
                                 $storecfg, $storeid, $source, $disk->{format},
                             ),
+                            $disk->{cylinders},
                         );
                         # without a name: the VOLSER of a CKD image
                         $volume_name //= $source_header->{volser} if $source_header;
@@ -1004,6 +1010,7 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                                 PVE::QemuServer::resolve_dst_disk_format(
                                     $storecfg, $storeid, undef, $disk->{format},
                                 ),
+                                $disk->{cylinders},
                             );
                             # without a name: the VOLSER of a CKD image
                             $volume_name //= $source_header->{volser} if $source_header;
@@ -6383,7 +6390,9 @@ __PACKAGE__->register_method({
                     };
                     die "VM $target_vmid: $@" if $@;
                 }
-                PVE::QemuServer::DASD::check_ckd_volume($storecfg, $source_volid, 1)
+                PVE::QemuServer::DASD::check_ckd_volume(
+                    $storecfg, $source_volid, $drive->{cylinders},
+                )
                     if $drive->{interface} eq 'ckd';
             }
 

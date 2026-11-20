@@ -651,7 +651,9 @@ sub export_ova {
             # a CKD volume as the exact image, without the slack of its storage
             my @source = ('-f', $src_format, $path);
             if ($disk->{key} =~ m/^ckd\d+$/) {
-                my $header = PVE::QemuServer::DASD::ckd_copy_source_header($storecfg, $src);
+                my $header = PVE::QemuServer::DASD::ckd_copy_source_header(
+                    $storecfg, $src, undef, $disk->{drive}->{cylinders},
+                );
                 my $exact = PVE::QemuServer::DASD::ckd_volume_size($header->{cylinders});
                 if ($capacity > $exact) {
                     print "$disk->{key}: exporting the $header->{cylinders} cylinders of the CKD"

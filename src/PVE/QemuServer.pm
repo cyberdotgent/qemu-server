@@ -5853,8 +5853,9 @@ sub vm_migrate_alloc_nbd_disks {
             push @$allocated, $newvolid;
 
             # the eckd-ccw device needs the header to start
-            PVE::QemuServer::DASD::init_ckd_volume_from_header($storecfg, $newvolid, $ckd_header)
-                if $is_ckd;
+            PVE::QemuServer::DASD::init_ckd_volume_from_header(
+                $storecfg, $newvolid, $ckd_header, $drive->{cylinders},
+            ) if $is_ckd;
 
             my $newdrive = $drive;
             $newdrive->{format} = $format;
@@ -7189,6 +7190,7 @@ my $parse_backup_hints = sub {
 
     my $virtdev_hash = {};
     my $volume_names = {};
+    my $ckd_cylinders = {};
     my $conf_raw = '';
     while (defined(my $line = <$fh>)) {
         $conf_raw .= $line;
@@ -7222,6 +7224,8 @@ my $parse_backup_hints = sub {
             if (PVE::QemuServer::Drive::drive_is_dasd($drive) && !drive_is_cloudinit($drive)) {
                 my $name = PVE::QemuServer::DASD::volume_name_of_volid($drive->{file});
                 $volume_names->{$virtdev} //= $name if defined($name);
+                $ckd_cylinders->{$virtdev} //= $drive->{cylinders}
+                    if $drive->{interface} eq 'ckd' && defined($drive->{cylinders});
             }
 
             if (drive_is_cloudinit($drive)) {
@@ -7250,14 +7254,18 @@ my $parse_backup_hints = sub {
         next if !$virtdev_hash->{$virtdev} || $virtdev_hash->{$virtdev}->{is_cloudinit};
         $virtdev_hash->{$virtdev}->{'volume-name'} = $volume_names->{$virtdev};
     }
+    for my $virtdev (keys %$ckd_cylinders) {
+        next if !$virtdev_hash->{$virtdev} || $virtdev_hash->{$virtdev}->{is_cloudinit};
+        $virtdev_hash->{$virtdev}->{'ckd-cylinders'} = $ckd_cylinders->{$virtdev};
+    }
 
     return $virtdev_hash;
 };
 
-# Complete and fit the restored volumes of CKD DASDs (see
-# PVE::QemuServer::DASD::fit_copied_ckd_volume()): cut slack on file based storages, refuse those
-# that QEMU could not use on their storage. The backup does not tell the CKD header,
-# so this is only possible once the data is restored.
+# Fit the restored volumes of CKD DASDs (see PVE::QemuServer::DASD::fit_copied_ckd_volume()): cut
+# padding on file based storages, refuse those that QEMU could not use on their storage. The backup does not tell the CKD header, so this is only possible once the data is
+# restored. The cylinders of the drives in the backed up config count for headers without a
+# cylinder count.
 my $restore_fit_ckd_volumes = sub {
     my ($storecfg, $virtdev_hash) = @_;
 
@@ -7265,7 +7273,11 @@ my $restore_fit_ckd_volumes = sub {
         next if $virtdev !~ m/^ckd\d+$/;
         my $d = $virtdev_hash->{$virtdev};
         next if $d->{is_cloudinit} || !$d->{volid};
-        eval { PVE::QemuServer::DASD::fit_copied_ckd_volume($storecfg, $d->{volid}) };
+        eval {
+            PVE::QemuServer::DASD::fit_copied_ckd_volume(
+                $storecfg, $d->{volid}, undef, $d->{'ckd-cylinders'},
+            );
+        };
         die "$virtdev: $@" if $@;
     }
 };
@@ -8821,7 +8833,7 @@ sub clone_disk {
         my $ckd_header;
         if (($dst_drivename // $src_drivename // '') =~ m/^ckd\d+$/ && !drive_is_cloudinit($drive)) {
             $ckd_header = PVE::QemuServer::DASD::ckd_copy_source_header(
-                $storecfg, $drive->{file}, $running,
+                $storecfg, $drive->{file}, $running, $drive->{cylinders},
             );
             PVE::QemuServer::DASD::assert_ckd_target_storage(
                 $storecfg, $storeid, $dst_format, $ckd_header, $dst_drivename // $src_drivename,

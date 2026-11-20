@@ -126,15 +126,16 @@ sub ckd_header {
     return $header . ("\0" x (CKD_HEADER_SIZE - length($header)));
 }
 
-# The first pve-qemu-kvm whose QEMU-mod accepts a CKD image longer than the cylinder count of its
-# header whatever its file sequence (the header is the authority, the rest is slack it ignores; a
-# shorter image is still an error), see ckd_image_needs_exact_size().
+# The first pve-qemu-kvm whose QEMU-mod takes the cylinder count of a CKD image from its header
+# whatever its file sequence, or from the 'cylinders' property of the eckd-ccw device if the header
+# has none, and ignores the bytes after the last cylinder (padding, as storages that round up the
+# size add it; a shorter image is still an error), see ckd_image_needs_exact_size().
 our $CKD_SLACK_PVE_QEMU_VERSION = '11.1.90-1+s390x10';
 
 my $ckd_slack_cache = {};
 
-# Whether the installed QEMU accepts slack after the cylinders of any CKD image, by the version of
-# pve-qemu-kvm (rechecked when the QEMU binary changes).
+# Whether the installed QEMU accepts padding after the cylinders of any CKD image, by the version
+# of pve-qemu-kvm (rechecked when the QEMU binary changes).
 sub ckd_slack_supported {
     my $binary = '/usr/bin/qemu-system-s390x';
     my $mtime = (stat($binary))[9] // -1;
@@ -164,30 +165,55 @@ sub ckd_slack_supported {
 }
 
 # Whether the volume of a CKD image must be exactly as large as the cylinders of the image, without
-# slack after the last cylinder. The eckd-ccw device of QEMU-mod up to pve-qemu-kvm
-# 11.1.90-1+s390x9 takes the cylinder count from the header ('high_cylinder', one-origin) and
-# ignores slack only if the 'file_sequence' of the header is 0 (Hercules). Images from zPDT have
-# another file sequence (0x04) and a cylinder count: that QEMU-mod takes their size from the length
-# of the image, which must then be a whole number of cylinders. Storages that round sizes up (ZFS
-# volblocksize, LVM extents) cannot hold them, file based storages can (see
-# storage_has_exact_size(), fit_ckd_volume()). Later builds accept the slack (see
-# ckd_slack_supported()).
+# padding after the last cylinder. The header of an image is never changed, so this
+# depends on the header and the installed QEMU:
 #
-# This is the one place that decides it: parse_ckd_header() accepts the slack if not,
-# assert_ckd_target_storage() refuses storages that round up if so, fit_ckd_volume() cuts slack on
-# file based storages either way.
+# - pve-qemu-kvm 11.1.90-1+s390x10 and later take the cylinder count from the header
+#   ('high_cylinder', one-origin) if it has one, else from the 'cylinders' property of the device,
+#   which the drive passes (see identity_properties()), and ignore any padding.
+# - Older builds ignore padding only if the header has a cylinder count and file sequence 0. They
+#   take the size of other images from their length: images from zPDT (another file sequence, like
+#   0x04) and Hercules images without a cylinder count ('high_cylinder' 0).
+#
+# Storages that round sizes up (ZFS volblocksize, LVM extents) cannot hold images that need the
+# exact size, file based storages can (see storage_has_exact_size(), fit_ckd_volume()).
+#
+# This is the one place that decides it: parse_ckd_header() refuses the padding if so,
+# assert_ckd_target_storage() refuses storages that round up if so, fit_ckd_volume() cuts padding
+# on file based storages either way.
 sub ckd_image_needs_exact_size {
     my ($header) = @_;
-    return $header->{'file-sequence'} && !ckd_slack_supported() ? 1 : 0;
+    return 0 if ckd_slack_supported();
+    return $header->{'file-sequence'} || !$header->{'high-cylinder'} ? 1 : 0;
+}
+
+# Why an image needs the exact size with the installed QEMU (see ckd_image_needs_exact_size()), for
+# messages.
+my sub exact_size_reason {
+    my ($header) = @_;
+    my $why = $header->{'high-cylinder'}
+        ? sprintf("its header has file sequence 0x%02x", $header->{'file-sequence'})
+        : "its header has no cylinder count";
+    return "$why and the installed QEMU needs the exact size;"
+        . " pve-qemu-kvm $CKD_SLACK_PVE_QEMU_VERSION or later accepts the padding";
 }
 
 # Parse a CKD image header. $length is the size of the image (volume) in bytes. Returns
 # { identifier, cylinders, serial, 'high-cylinder', 'file-sequence' } or dies with what is wrong.
-# With $allow_slack, an image that has a cylinder count and another file sequence than 0 (zPDT) may
-# be longer than its cylinders, as when it was copied to a storage that rounds up the size: for the
-# source of a copy, whose slack fit_ckd_volume() removes, and for volumes that need fixing.
+#
+# The cylinders are those of the header if it has a count ('high_cylinder'), else $cylinders (the
+# 'cylinders' of the drive, if known), else the length of the image, which must then be whole
+# cylinders. A given $cylinders must match the count of the header, as QEMU checks it.
+#
+# The image may be longer than its cylinders (padding) if the installed QEMU accepts it (see
+# ckd_image_needs_exact_size()), or with $allow_slack: for the source of a copy, whose padding
+# fit_ckd_volume() removes, and for volumes that need fixing.
+#
+# Members of a Hercules multi-file volume are refused: the last one has file sequence 1 or more
+# and no cylinder count. The others carry the zero-origin number of their last cylinder: QEMU
+# recognizes them by the track after it.
 sub parse_ckd_header {
-    my ($data, $length, $allow_slack) = @_;
+    my ($data, $length, $allow_slack, $cylinders) = @_;
 
     die "not a CKD image: shorter than its header\n"
         if length($data) < CKD_HEADER_SIZE || $length < CKD_HEADER_SIZE;
@@ -213,40 +239,43 @@ sub parse_ckd_header {
         $track_size,
         )
         if $device_type != CKD_DEVICE_TYPE || $heads != CKD_HEADS || $track_size != CKD_TRACK_SIZE;
+    die "multi-file CKD images are not supported (this is the last file of a multi-file volume),"
+        . " join them first, for example with Hercules 'dasdcopy -lfs'\n"
+        if !$high_cylinder && $file_sequence;
 
     my $data_length = $length - CKD_HEADER_SIZE;
-    my $slack_ok = !$file_sequence
-        || $allow_slack
-        || !ckd_image_needs_exact_size({ 'file-sequence' => $file_sequence });
-    if ($high_cylinder && $file_sequence && $slack_ok) {
-        # A member of a multi-file Hercules volume has a zero-origin high cylinder: its length is
-        # whole cylinders beyond it, never the slack of a storage.
-        my $slack = $data_length - $high_cylinder * ckd_cylinder_size();
-        $slack_ok = 0 if $slack > 0 && $slack % ckd_cylinder_size() == 0;
-    }
-    my $cylinders;
-    if ($high_cylinder && $slack_ok) {
-        $cylinders = $high_cylinder;
-        die "CKD image is too short for $cylinders cylinders\n"
-            if $data_length < $cylinders * ckd_cylinder_size();
+    my $count;
+    if ($high_cylinder) {
+        die "cylinders=$cylinders does not match the CKD image header ($high_cylinder cylinders)\n"
+            if defined($cylinders) && $cylinders != $high_cylinder;
+        $count = $high_cylinder;
+    } elsif (defined($cylinders)) {
+        $count = $cylinders;
     } else {
-        die "CKD image does not contain whole cylinders\n"
+        die "CKD image does not contain whole cylinders and its header has no cylinder count,"
+            . " give the cylinders of the volume ('cylinders')\n"
             if $data_length % ckd_cylinder_size();
-        $cylinders = $data_length / ckd_cylinder_size();
-        die "multi-file CKD images are not supported, join them first, for example with"
-            . " Hercules 'dasdcopy -lfs'\n"
-            if ($file_sequence || $high_cylinder) && $high_cylinder != $cylinders;
+        $count = $data_length / ckd_cylinder_size();
     }
-    die "CKD image has $cylinders cylinders, supported are 1 to " . CKD_MAX_CYLINDERS . "\n"
-        if $cylinders < 1 || $cylinders > CKD_MAX_CYLINDERS;
+    die "CKD image has $count cylinders, supported are 1 to " . CKD_MAX_CYLINDERS . "\n"
+        if $count < 1 || $count > CKD_MAX_CYLINDERS;
+    die "CKD image is too short for $count cylinders\n"
+        if $data_length < $count * ckd_cylinder_size();
 
-    return {
+    my $header = {
         identifier => $identifier,
-        cylinders => $cylinders,
+        cylinders => $count,
         serial => $serial,
         'high-cylinder' => $high_cylinder,
         'file-sequence' => $file_sequence,
     };
+
+    my $padding = $data_length - $count * ckd_cylinder_size();
+    die "CKD image has $padding bytes after its $count cylinders: " . exact_size_reason($header)
+        . "\n"
+        if $padding && !$allow_slack && ckd_image_needs_exact_size($header);
+
+    return $header;
 }
 
 my $ebcdic_volser_chars = {
@@ -372,25 +401,23 @@ sub assert_ckd_target_storage {
 
     my $scfg = PVE::Storage::storage_config($storecfg, $storeid);
     die sprintf(
-        "%s: the CKD image needs a volume of exactly %d bytes (%d cylinders, its header has"
-            . " file sequence 0x%02x like images from zPDT): storage '%s' (%s%s) rounds the size"
-            . " up and QEMU would refuse the volume. Use a file based storage (like a directory"
-            . " or NFS storage) with format raw or qcow2.\n",
+        "%s: the CKD image needs a volume of exactly %d bytes (%d cylinders, %s): storage '%s'"
+            . " (%s%s) rounds the size up and QEMU would refuse the volume. Use a file based"
+            . " storage (like a directory or NFS storage) with format raw or qcow2.\n",
         $what,
         ckd_volume_size($header->{cylinders}),
         $header->{cylinders},
-        $header->{'file-sequence'},
+        exact_size_reason($header),
         $storeid,
         $scfg->{type},
         ($scfg->{path} ? ", format " . ($format // 'raw') : ''),
     );
 }
 
-# Make the volume of a copied CKD image what QEMU accepts: cut slack after its cylinders (from the
-# source, or the storage rounding up the size) on file based storages, refuse a volume with slack
-# that QEMU would not accept elsewhere. The header of the volume must have the cylinder count of
-# $header (see finish_ckd_import()): without it, the length of the image is the count. Returns the
-# size of the volume.
+# Make the volume of a copied CKD image what QEMU accepts: cut the padding after its cylinders
+# (from the source, or the storage rounding up the size) on file based storages, refuse a volume
+# with padding that QEMU would not accept elsewhere. The header is not changed: if it has no
+# cylinder count, the drive must have the cylinders of $header. Returns the size of the volume.
 sub fit_ckd_volume {
     my ($storecfg, $volid, $header) = @_;
 
@@ -402,8 +429,8 @@ sub fit_ckd_volume {
 
     my ($storeid) = PVE::Storage::parse_volume_id($volid);
     if (storage_has_exact_size($storecfg, $storeid, $format)) {
-        print "volume '$volid': cutting the slack after the $cylinders cylinders of the CKD image"
-            . " ($size to $exact bytes)\n";
+        print "volume '$volid': cutting the padding after the $cylinders cylinders of the CKD"
+            . " image ($size to $exact bytes)\n";
         run_command(
             ['/usr/bin/qemu-img', 'resize', '--shrink', '-f', $format, $path, $exact],
             outfunc => sub { },
@@ -415,15 +442,16 @@ sub fit_ckd_volume {
     return $size;
 }
 
-# Complete and fit (see fit_ckd_volume()) the CKD volume $volid that was just copied or restored
-# with its own header: write the cylinder count into the header if it has none. Returns the header.
+# Fit (see fit_ckd_volume()) the CKD volume $volid that was just copied or restored with its own
+# header. $cylinders: those of the drive, if known, for a header without a cylinder count. Returns
+# the header.
 sub fit_copied_ckd_volume {
-    my ($storecfg, $volid, $source_header) = @_;
+    my ($storecfg, $volid, $source_header, $cylinders) = @_;
 
     my $header = $source_header;
     if (!$header) {
         my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
-        $header = eval { parse_ckd_header(read_image_head($path, $format), $size, 1) };
+        $header = eval { parse_ckd_header(read_image_head($path, $format), $size, 1, $cylinders) };
         die "volume '$volid': $@" if $@;
     }
     $header = finish_ckd_import($storecfg, $volid, $header);
@@ -431,7 +459,7 @@ sub fit_copied_ckd_volume {
 }
 
 # The qemu-img --image-opts of the first $size bytes of the image $path in format $format, for
-# copying a CKD image without slack after its cylinders.
+# copying a CKD image without the padding after its cylinders.
 sub image_opts_cut {
     my ($path, $format, $size) = @_;
 
@@ -455,98 +483,85 @@ sub init_ckd_volume {
     write_image_head($path, $format, ckd_header($cylinders));
 }
 
-# Check the CKD header of an existing volume. If the header leaves the size to the length of the
-# image (Hercules does), write the cylinder count into it, so the volume stays usable when its
-# storage rounds up the size (move, restore, clone). Returns the parsed header.
-# With $dry_run, only check.
+# Check the CKD header of an existing volume, as QEMU will use it. $cylinders: those of the drive,
+# if known (see parse_ckd_header()). The header is never changed. Returns the parsed header.
 sub check_ckd_volume {
-    my ($storecfg, $volid, $dry_run) = @_;
+    my ($storecfg, $volid, $cylinders) = @_;
 
     my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
     my $data = read_image_head($path, $format);
-    my $header = eval { parse_ckd_header($data, $size) };
+    my $header = eval { parse_ckd_header($data, $size, 0, $cylinders) };
     if (my $err = $@) {
-        # a zPDT image with slack: say what to do about it
-        if (my $slack_header = eval { parse_ckd_header($data, $size, 1) }) {
+        # padding the installed QEMU does not accept: say what to do about it
+        if (my $padded = eval { parse_ckd_header($data, $size, 1, $cylinders) }) {
             chomp($err);
-            die "volume '$volid': $err - the CKD image needs a volume of exactly "
-                . ckd_volume_size($slack_header->{cylinders})
-                . " bytes, not $size (its header has file sequence"
-                . sprintf(" 0x%02x", $slack_header->{'file-sequence'})
-                . "), move it to a file based storage (like a directory or NFS storage) with"
-                . " format raw or qcow2, which cuts the slack\n";
+            die "volume '$volid': $err - move it to a file based storage (like a directory or"
+                . " NFS storage) with format raw or qcow2, which cuts the padding to exactly "
+                . ckd_volume_size($padded->{cylinders})
+                . " bytes\n";
         }
         die "volume '$volid': $err";
-    }
-
-    if (!$dry_run && $header->{'high-cylinder'} != $header->{cylinders}) {
-        print "volume '$volid': setting the cylinder count in the CKD header\n";
-        write_image_head(
-            $path,
-            $format,
-            ckd_header(
-                $header->{cylinders}, $header->{serial}, $header->{identifier},
-                $header->{'file-sequence'},
-            ),
-        );
-        $header->{'high-cylinder'} = $header->{cylinders};
     }
 
     return $header;
 }
 
-# The header of the CKD volume $volid, the source of a copy (move, clone, import), slack allowed
-# (see parse_ckd_header()). $force_share if a running VM has it open.
+# The header of the CKD volume $volid, the source of a copy (move, clone, import, export), padding
+# allowed (see parse_ckd_header()). $force_share if a running VM has it open. $cylinders: those of
+# the drive, if known.
 sub ckd_copy_source_header {
-    my ($storecfg, $volid, $force_share) = @_;
+    my ($storecfg, $volid, $force_share, $cylinders) = @_;
 
     my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
-    my $header = eval { parse_ckd_header(read_image_head($path, $format, $force_share), $size, 1) };
+    my $header = eval {
+        parse_ckd_header(read_image_head($path, $format, $force_share), $size, 1, $cylinders);
+    };
     die "volume '$volid': $@" if $@;
     return $header;
 }
 
 # The header of the CKD volume of a running VM, for its migration target (see
-# init_ckd_volume_from_header()), with the cylinder count in it: the target volume may be larger.
+# init_ckd_volume_from_header()), as it is. $cylinders: those of the drive, if known.
 sub ckd_volume_header_for_migration {
-    my ($storecfg, $volid) = @_;
+    my ($storecfg, $volid, $cylinders) = @_;
 
     my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
     my $data = read_image_head($path, $format, 1);
-    my $header = eval { parse_ckd_header($data, $size) };
+    # the running VM uses the volume as it is, the check only gives a clear error
+    eval { parse_ckd_header($data, $size, 1, $cylinders) };
     die "volume '$volid': $@" if $@;
 
-    return substr($data, 0, CKD_HEADER_SIZE) if $header->{'high-cylinder'} == $header->{cylinders};
-    return ckd_header(
-        $header->{cylinders}, $header->{serial}, $header->{identifier}, $header->{'file-sequence'},
-    );
+    return substr($data, 0, CKD_HEADER_SIZE);
 }
 
 # Write the header of the CKD volume of a migrating VM (see ckd_volume_header_for_migration())
 # into its new, empty volume on the target. The eckd-ccw device of the target needs it to start,
-# the storage migration then copies the whole volume, the same header included. Returns the
-# parsed header.
+# the storage migration then copies the whole volume, the same header included. $cylinders: those
+# of the drive, for a header without a cylinder count. The new volume may be larger than the
+# source: the QEMU of the target must accept the padding. Returns the parsed header.
 sub init_ckd_volume_from_header {
-    my ($storecfg, $volid, $data) = @_;
+    my ($storecfg, $volid, $data, $cylinders) = @_;
 
     die "internal error: CKD header must be " . CKD_HEADER_SIZE . " bytes\n"
         if length($data) != CKD_HEADER_SIZE;
 
     my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
-    my $header = eval { parse_ckd_header($data, $size) };
+    my $high_cylinder = unpack('v', substr($data, 18, 2));
+    die "volume '$volid': the CKD header has no cylinder count and the drive has no 'cylinders'\n"
+        if !$high_cylinder && !defined($cylinders);
+    my $header = eval { parse_ckd_header($data, $size, 0, $cylinders) };
     die "volume '$volid': $@" if $@;
-    die "volume '$volid': the CKD header has no cylinder count\n"
-        if $header->{'high-cylinder'} != $header->{cylinders};
     write_image_head($path, $format, $data);
 
     return $header;
 }
 
 # Complete a CKD volume imported from an image whose header ($source_header, see
-# check_ckd_import_source()) was checked before: write the cylinder count of the source into the
-# header of the volume, as the storage may have made it larger (LVM extents, ZFS volblocksize) and
-# the slack must not count as cylinders, then fit it (see fit_ckd_volume()). Returns the header of
-# the volume, with the 'size' of the volume.
+# check_ckd_import_source()) was checked before: the volume has the cylinders of the source, not
+# those of its length, as the storage may have made it larger (LVM extents, ZFS volblocksize). The
+# header is not changed: the drive gets the 'cylinders', which QEMU takes for a header without a
+# count. Then fit it (see fit_ckd_volume()). Returns the header of the volume, with the 'size' of
+# the volume.
 sub finish_ckd_import {
     my ($storecfg, $volid, $source_header) = @_;
 
@@ -557,32 +572,23 @@ sub finish_ckd_import {
     die "volume '$volid' is too small for $cylinders cylinders\n"
         if $size < ckd_volume_size($cylinders);
 
-    my $header = { $source_header->%*, 'high-cylinder' => $cylinders };
-    if ($source_header->{'high-cylinder'} != $cylinders) {
-        print "volume '$volid': setting the cylinder count in the CKD header\n";
-        write_image_head(
-            $path,
-            $format,
-            ckd_header(
-                $cylinders, $header->{serial}, $header->{identifier}, $header->{'file-sequence'},
-            ),
-        );
-    }
+    my $header = { $source_header->%* };
     $header->{size} = fit_ckd_volume($storecfg, $volid, $header);
 
     return $header;
 }
 
-# Check an image to be imported as a CKD volume, before importing it, slack allowed (see
-# parse_ckd_header()). Returns the parsed header, with the 'volser' of the volume if it has one.
+# Check an image to be imported as a CKD volume, before importing it, padding allowed (see
+# parse_ckd_header()). $cylinders: those given for the drive, if any. Returns the parsed header,
+# with the 'volser' of the volume if it has one.
 sub check_ckd_import_source {
-    my ($path, $format, $size) = @_;
+    my ($path, $format, $size, $cylinders) = @_;
 
     # the header and the first track, with the volume label
     my $blocks = (CKD_HEADER_SIZE + CKD_TRACK_SIZE) / 512;
     $blocks = int($size / 512) if $size < $blocks * 512;
     my $data = read_image_head($path, $format, undef, $blocks);
-    my $header = eval { parse_ckd_header($data, $size, 1) };
+    my $header = eval { parse_ckd_header($data, $size, 1, $cylinders) };
     die "cannot import '$path' as CKD volume: $@" if $@;
     my $volser = ckd_volser($data);
     $header->{volser} = $volser if defined($volser);

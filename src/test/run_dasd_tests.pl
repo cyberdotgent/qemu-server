@@ -67,8 +67,8 @@ like(
 );
 
 my $parse = sub {
-    my ($data, $length) = @_;
-    return eval { PVE::QemuServer::DASD::parse_ckd_header($data, $length) } // $@;
+    my ($data, $length, $cylinders) = @_;
+    return eval { PVE::QemuServer::DASD::parse_ckd_header($data, $length, 0, $cylinders) } // $@;
 };
 
 is_deeply(
@@ -88,12 +88,56 @@ substr($hercules, 18, 2, "\0\0"); # high_cylinder 0, as Hercules writes it
 substr($hercules, 0, 8, 'CKD_P370');
 is($parse->($hercules, 512 + 10017 * $cyl)->{cylinders}, 10017, 'Hercules header, exact length');
 is($parse->($hercules, 512 + 10017 * $cyl)->{'high-cylinder'}, 0, 'Hercules high cylinder');
-like($parse->($hercules, 512 + 10017 * $cyl + 512), qr/whole cylinders/, 'Hercules header, slack');
+like(
+    $parse->($hercules, 512 + 10017 * $cyl + 512),
+    qr/whole cylinders and its header has no cylinder count/,
+    'Hercules header, padding, cylinders unknown',
+);
 like($parse->($header, 512 + 3338 * $cyl), qr/too short for 3339/, 'too short');
 
+# the cylinders of the drive: authoritative without a count in the header, must match
+# a count in the header
+is($parse->($hercules, 512 + 10017 * $cyl, 10017)->{cylinders}, 10017, 'Hercules header, cylinders');
+like(
+    $parse->($hercules, 512 + 10017 * $cyl + 512, 10017),
+    qr/512 bytes after its 10017 cylinders: its header has no cylinder count and the installed QEMU needs the exact size/,
+    'Hercules header, padding: refused for QEMU-mod up to +s390x9',
+);
+like($parse->($hercules, 512 + 10016 * $cyl, 10017), qr/too short for 10017/, 'cylinders: too short');
+is($parse->($header, 512 + 3339 * $cyl, 3339)->{cylinders}, 3339, 'cylinders match the header');
+like(
+    $parse->($header, 512 + 3339 * $cyl, 3338),
+    qr/^cylinders=3338 does not match the CKD image header \(3339 cylinders\)/,
+    'cylinders do not match the header',
+);
+{
+    local $slack_supported = 1;
+    my $res = $parse->($hercules, 512 + 10017 * $cyl + 4 * 1024 * 1024, 10017);
+    is($res->{cylinders}, 10017, 'Hercules header, padding, cylinders: accepted by +s390x10');
+    is($res->{'high-cylinder'}, 0, 'Hercules header, padding, cylinders: header as it is');
+}
+
+# Hercules multi-file volumes: the last file has no cylinder count, the others the zero-origin
+# number of their last cylinder (left to QEMU, which looks at the track after it)
 my $multi = $hercules;
 substr($multi, 17, 3, "\x01\x0f\x27"); # file 1, last cylinder 9999
-like($parse->($multi, 512 + 10017 * $cyl), qr/multi-file/, 'multi-file member');
+like(
+    $parse->($multi, 512 + 10000 * $cyl),
+    qr/9999 cylinders: its header has file sequence 0x01/,
+    'first file of a multi-file volume: no exact size',
+);
+my $multi_last = $hercules;
+substr($multi_last, 17, 1, "\x02"); # file 2, high cylinder 0
+like(
+    $parse->($multi_last, 512 + 17 * $cyl),
+    qr/^multi-file CKD images are not supported \(this is the last file of a multi-file volume\)/,
+    'last file of a multi-file volume refused',
+);
+like(
+    (eval { PVE::QemuServer::DASD::parse_ckd_header($multi_last, 512 + 17 * $cyl, 1, 17) } // $@),
+    qr/^multi-file CKD images are not supported/,
+    'last file of a multi-file volume refused, padding allowed, cylinders given',
+);
 
 my $old_single = $hercules;
 substr($old_single, 17, 3, "\x01\x21\x27"); # file 1, high cylinder = cylinder count
@@ -255,7 +299,7 @@ is($@, '', 'CKD allows offline operations');
 
 # header I/O with the real tools, if installed
 SKIP: {
-    skip 'qemu-img/qemu-io not installed', 33 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
+    skip 'qemu-img/qemu-io not installed', 39 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
 
     my $dir = tempdir(CLEANUP => 1);
     for my $format (qw(raw qcow2)) {
@@ -286,32 +330,34 @@ SKIP: {
     }
 
     # a volume through the storage layer: create, attach a Hercules image
-    my $vol = "$dir/vm-100-SYSRS1.raw";
+    my $vol = "$dir/vm-100-WORK01.raw";
     $storage->mock(
         activate_volumes => sub { },
         path => sub { return $vol; },
         parse_volname =>
-            sub { return ('images', 'vm-100-SYSRS1.raw', 100, undef, undef, undef, 'raw'); },
+            sub { return ('images', 'vm-100-WORK01.raw', 100, undef, undef, undef, 'raw'); },
         volume_size_info => sub { return -s $vol; },
-        parse_volume_id => sub { return ('local-lvm', 'vm-100-SYSRS1'); },
+        parse_volume_id => sub { return ('local-lvm', 'vm-100-WORK01'); },
         storage_config => sub { return { type => 'lvmthin', content => { images => 1 } }; },
     );
     open(my $fh, '>', $vol) or die;
     close($fh);
     truncate($vol, PVE::QemuServer::DASD::ckd_alloc_size_kib(1113) * 1024 + 4 * 1024 * 1024);
-    PVE::QemuServer::DASD::init_ckd_volume({}, 'local:100/vm-100-SYSRS1.raw', 1113);
-    my $checked = PVE::QemuServer::DASD::check_ckd_volume({}, 'local:100/vm-100-SYSRS1.raw');
-    is($checked->{cylinders}, 1113, 'new volume with slack');
+    PVE::QemuServer::DASD::init_ckd_volume({}, 'local:100/vm-100-WORK01.raw', 1113);
+    my $checked = PVE::QemuServer::DASD::check_ckd_volume({}, 'local:100/vm-100-WORK01.raw');
+    is($checked->{cylinders}, 1113, 'new volume with padding');
 
-    # Hercules form: exact length, high cylinder 0 -> gets the cylinder count
+    # Hercules form: exact length, high cylinder 0 -> the header stays as it is
     truncate($vol, 512 + 1113 * $cyl);
     PVE::QemuServer::DASD::write_image_head($vol, 'raw', $hercules);
     $checked = PVE::QemuServer::DASD::check_ckd_volume({}, 'x');
-    is($checked->{'high-cylinder'}, 1113, 'Hercules header completed');
-    is(
-        substr(PVE::QemuServer::DASD::read_image_head($vol, 'raw'), 0, 32),
-        'CKD_P370' . substr($header, 8, 10) . pack('v', 1113) . '876955967561',
-        'identifier and serial kept',
+    is($checked->{cylinders}, 1113, 'Hercules volume: cylinders of its length');
+    is($checked->{'high-cylinder'}, 0, 'Hercules volume: no count in the header');
+    is(PVE::QemuServer::DASD::read_image_head($vol, 'raw'), $hercules, 'Hercules header unchanged');
+    like(
+        (eval { PVE::QemuServer::DASD::check_ckd_volume({}, 'x', 1000) } // $@),
+        qr/CKD image has \d+ bytes after its 1000 cylinders/,
+        'Hercules volume: given cylinders, padding',
     );
 
     # import of a Hercules image (exact length, high cylinder 0) into storage that rounds the
@@ -321,22 +367,39 @@ SKIP: {
         my $source_size = 512 + 1113 * $cyl;
         my $source_header = $parse->($hercules, $source_size);
         is($source_header->{cylinders}, 1113, "$what: source cylinders");
-        # the copy of the source, on a volume with slack
+        # the copy of the source, on a volume with padding
         truncate($vol, 0);
         truncate($vol, $source_size + ($unit - $source_size % $unit) % $unit);
         PVE::QemuServer::DASD::write_image_head($vol, 'raw', $hercules);
-        ok(-s $vol > $source_size, "$what: destination has slack");
+        ok(-s $vol > $source_size, "$what: destination has padding");
         like(
             (eval { PVE::QemuServer::DASD::check_ckd_volume({}, 'x') } // $@),
             qr/whole cylinders/,
-            "$what: the slack alone does not tell the cylinders",
+            "$what: the padding alone does not tell the cylinders",
         );
+        like(
+            (eval { PVE::QemuServer::DASD::check_ckd_volume({}, 'x', 1113) } // $@),
+            qr/bytes after its 1113 cylinders: its header has no cylinder count.*move it to a file based storage/,
+            "$what: QEMU-mod up to +s390x9 needs the exact size",
+        );
+        like(
+            (eval { PVE::QemuServer::DASD::finish_ckd_import({}, 'x', $source_header) } // $@),
+            qr/needs a volume of exactly \d+ bytes \(1113 cylinders, its header has no cylinder count .*rounds the size up/,
+            "$what: import refused for QEMU-mod up to +s390x9",
+        );
+        local $slack_supported = 1;
         my $imported = PVE::QemuServer::DASD::finish_ckd_import({}, 'x', $source_header);
         is($imported->{cylinders}, 1113, "$what: imported volume has the source cylinders");
+        is($imported->{size}, -s $vol, "$what: padding kept on block storage");
         is(
-            $parse->(PVE::QemuServer::DASD::read_image_head($vol, 'raw'), -s $vol)->{cylinders},
+            PVE::QemuServer::DASD::read_image_head($vol, 'raw'),
+            $hercules,
+            "$what: header unchanged",
+        );
+        is(
+            PVE::QemuServer::DASD::check_ckd_volume({}, 'x', 1113)->{cylinders},
             1113,
-            "$what: cylinder count written into the header",
+            "$what: volume usable with the cylinders of the drive",
         );
     }
     truncate($vol, 512 + 1000 * $cyl);
@@ -348,33 +411,43 @@ SKIP: {
     like($@, qr/too small for 1113 cylinders/, 'import destination too small');
 
     # live migration with storage migration: the header of the source volume (Hercules form here)
-    # for the new, larger volume on the target
+    # for the new, larger volume on the target, as it is
     truncate($vol, 0);
     truncate($vol, 512 + 1113 * $cyl);
     PVE::QemuServer::DASD::write_image_head($vol, 'raw', $hercules);
     my $migration_header = PVE::QemuServer::DASD::ckd_volume_header_for_migration({}, 'x');
-    is(length($migration_header), 512, 'migration: header length');
-    is($parse->($migration_header, 10**12)->{'high-cylinder'}, 1113, 'migration: cylinder count');
-    is(substr($migration_header, 20, 12), '876955967561', 'migration: serial kept');
+    is($migration_header, $hercules, 'migration: header as it is');
+    is(
+        PVE::QemuServer::DASD::ckd_volume_header_for_migration({}, 'x', 1113),
+        $hercules,
+        'migration: header as it is, with the cylinders of the drive',
+    );
     truncate($vol, 0);
     truncate($vol, 512 + 1113 * $cyl + 4 * 1024 * 1024);
-    my $target = PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $migration_header);
-    is($target->{cylinders}, 1113, 'migration: new volume initialized');
-    is(
-        PVE::QemuServer::DASD::read_image_head($vol, 'raw'),
-        $migration_header,
-        'migration: header of the source on the new volume',
-    );
-    is(
-        PVE::QemuServer::DASD::ckd_volume_header_for_migration({}, 'x'),
-        $migration_header,
-        'migration: header with cylinder count taken as is',
-    );
-    truncate($vol, 512 + 1000 * $cyl);
-    eval { PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $migration_header) };
-    like($@, qr/too short for 1113 cylinders/, 'migration: new volume too small');
     eval { PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $hercules) };
-    like($@, qr/no cylinder count/, 'migration: header without cylinder count refused');
+    like($@, qr/no cylinder count and the drive has no 'cylinders'/, 'migration: cylinders unknown');
+    eval { PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $hercules, 1113) };
+    like($@, qr/bytes after its 1113 cylinders/, 'migration: padding refused up to +s390x9');
+    {
+        local $slack_supported = 1;
+        my $target =
+            PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $hercules, 1113);
+        is($target->{cylinders}, 1113, 'migration: new volume initialized');
+        is(
+            PVE::QemuServer::DASD::read_image_head($vol, 'raw'),
+            $hercules,
+            'migration: header of the source on the new volume',
+        );
+    }
+    my $counted = PVE::QemuServer::DASD::ckd_header(1113, '876955967561');
+    my $target = PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $counted, 1113);
+    is($target->{cylinders}, 1113, 'migration: header with a count, padding');
+    eval { PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $counted, 1000) };
+    like($@, qr/cylinders=1000 does not match the CKD image header \(1113 cylinders\)/,
+        'migration: cylinders of the drive do not match');
+    truncate($vol, 512 + 1000 * $cyl);
+    eval { PVE::QemuServer::DASD::init_ckd_volume_from_header({}, 'x', $counted) };
+    like($@, qr/too short for 1113 cylinders/, 'migration: new volume too small');
 }
 
 # the model of a DASD in the config
@@ -551,25 +624,32 @@ my $zpdt = $header;
 substr($zpdt, 17, 1, "\x04");
 is($parse->($zpdt, 512 + 3339 * $cyl)->{'file-sequence'}, 4, 'zPDT: file sequence');
 is($parse->($zpdt, 512 + 3339 * $cyl)->{cylinders}, 3339, 'zPDT: exact length');
-like($parse->($zpdt, 512 + 3339 * $cyl + 16384), qr/whole cylinders/, 'zPDT: slack refused');
+like(
+    $parse->($zpdt, 512 + 3339 * $cyl + 16384),
+    qr/16384 bytes after its 3339 cylinders: its header has file sequence 0x04/,
+    'zPDT: padding refused',
+);
 is(
     eval { PVE::QemuServer::DASD::parse_ckd_header($zpdt, 512 + 3339 * $cyl + 16384, 1) }
         ->{cylinders},
     3339,
     'zPDT: slack allowed for the source of a copy',
 );
-like(
-    (eval { PVE::QemuServer::DASD::parse_ckd_header($multi, 512 + 10000 * $cyl, 1) } // $@),
-    qr/multi-file/,
-    'multi-file member is no image with slack',
-);
-ok(PVE::QemuServer::DASD::ckd_image_needs_exact_size({ 'file-sequence' => 4 }), 'zPDT: exact size');
-ok(!PVE::QemuServer::DASD::ckd_image_needs_exact_size({ 'file-sequence' => 0 }), 'Hercules: slack ok');
+my $zpdt_res = { 'file-sequence' => 4, 'high-cylinder' => 3339 };
+my $counted_res = { 'file-sequence' => 0, 'high-cylinder' => 3339 };
+my $hercules_res = { 'file-sequence' => 0, 'high-cylinder' => 0 };
+ok(PVE::QemuServer::DASD::ckd_image_needs_exact_size($zpdt_res), 'zPDT: exact size');
+ok(!PVE::QemuServer::DASD::ckd_image_needs_exact_size($counted_res), 'cylinder count: padding ok');
+ok(PVE::QemuServer::DASD::ckd_image_needs_exact_size($hercules_res), 'no cylinder count: exact');
 {
     local $slack_supported = 1;
     ok(
-        !PVE::QemuServer::DASD::ckd_image_needs_exact_size({ 'file-sequence' => 4 }),
-        'zPDT with a QEMU-mod that accepts slack',
+        !PVE::QemuServer::DASD::ckd_image_needs_exact_size($zpdt_res),
+        'zPDT with a QEMU-mod that accepts padding',
+    );
+    ok(
+        !PVE::QemuServer::DASD::ckd_image_needs_exact_size($hercules_res),
+        'no cylinder count with a QEMU-mod that accepts padding',
     );
     is($parse->($zpdt, 512 + 3339 * $cyl + 16384)->{cylinders}, 3339, 'zPDT: slack accepted');
     like($parse->($zpdt, 512 + 3338 * $cyl), qr/too short/, 'zPDT: shorter still refused');
@@ -614,7 +694,18 @@ is(
             $storecfg, 'local-zfs', 'raw', $parse->($header, 512 + 3339 * $cyl), 'ckd0',
         );
     };
-    is($@, '', 'Hercules image to a zvol');
+    is($@, '', 'image with a cylinder count to a zvol');
+    my $hercules_header = $parse->($hercules, 512 + 3339 * $cyl);
+    eval {
+        PVE::QemuServer::DASD::assert_ckd_target_storage(
+            $storecfg, 'local-zfs', 'raw', $hercules_header, 'ckd0',
+        );
+    };
+    like(
+        $@,
+        qr/^ckd0: the CKD image needs a volume of exactly 2846431232 bytes \(3339 cylinders, its header has no cylinder count .*11\.1\.90-1\+s390x10 or later/,
+        'image without a cylinder count to a zvol refused up to +s390x9',
+    );
     {
         local $slack_supported = 1;
         eval {
@@ -622,7 +713,13 @@ is(
                 $storecfg, 'local-zfs', 'raw', $zpdt_header, 'ckd0',
             );
         };
-        is($@, '', 'zPDT image to a zvol, QEMU-mod accepts slack');
+        is($@, '', 'zPDT image to a zvol, QEMU-mod accepts padding');
+        eval {
+            PVE::QemuServer::DASD::assert_ckd_target_storage(
+                $storecfg, 'local-zfs', 'raw', $hercules_header, 'ckd0',
+            );
+        };
+        is($@, '', 'image without a cylinder count to a zvol, QEMU-mod accepts padding');
     }
 }
 
@@ -717,9 +814,9 @@ SKIP: {
         );
         PVE::QemuServer::DASD::write_image_head($vol, $f, $zpdt_1113);
         my $source = PVE::QemuServer::DASD::ckd_copy_source_header($storecfg, 'x');
-        is($source->{cylinders}, 1113, "$f: copy source with slack");
+        is($source->{cylinders}, 1113, "$f: copy source with padding");
         my $res = PVE::QemuServer::DASD::finish_ckd_import($storecfg, 'x', $source);
-        is($res->{size}, $exact, "$f: slack cut on file based storage");
+        is($res->{size}, $exact, "$f: padding cut on file based storage");
         is(
             PVE::QemuServer::DASD::check_ckd_volume($storecfg, 'x')->{cylinders},
             1113,
@@ -727,7 +824,7 @@ SKIP: {
         );
         is(PVE::QemuServer::DASD::read_image_head($vol, $f), $zpdt_1113, "$f: header unchanged");
     }
-    # a zvol: the slack stays, QEMU-mod up to +s390x9 refuses it
+    # a zvol: the padding stays, QEMU-mod up to +s390x9 refuses it
     $storeid = 'local-zfs';
     $format = 'raw';
     $vol = "$dir/zvol.raw";
@@ -738,10 +835,10 @@ SKIP: {
     PVE::QemuServer::DASD::write_image_head($vol, 'raw', $zpdt_1113);
     my $source = PVE::QemuServer::DASD::ckd_copy_source_header($storecfg, 'x');
     eval { PVE::QemuServer::DASD::finish_ckd_import($storecfg, 'x', $source) };
-    like($@, qr/rounds the size up/, 'zvol with slack refused');
+    like($@, qr/rounds the size up/, 'zvol with padding refused');
     like(
         (eval { PVE::QemuServer::DASD::check_ckd_volume($storecfg, 'x') } // $@),
-        qr/needs a volume of exactly $exact bytes.*move it to a file based storage/,
+        qr/16384 bytes after its 1113 cylinders.*move it to a file based storage.*exactly $exact bytes/,
         'attaching a zvol with slack: what to do',
     );
 }
