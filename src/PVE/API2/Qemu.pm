@@ -209,7 +209,7 @@ my $foreach_volume_with_alloc = sub {
 my $check_drive_param = sub {
     my ($param, $storecfg, $extra_checks) = @_;
 
-    for my $opt (sort keys $param->%*) {
+    for my $opt (PVE::QemuServer::Drive::sort_drive_keys(keys $param->%*)) {
         next if !PVE::QemuServer::is_valid_drivename($opt);
 
         my $drive = PVE::QemuServer::parse_drive($opt, $param->{$opt}, 1);
@@ -431,7 +431,7 @@ my $check_storage_access = sub {
         },
     );
 
-    for my $opt (sort keys $settings->%*) {
+    for my $opt (PVE::QemuServer::Drive::sort_drive_keys(keys $settings->%*)) {
         next if $opt !~ /^unused\d+$/;
 
         my $drive = PVE::QemuServer::Drive::parse_drive($opt, $settings->{$opt})
@@ -3549,8 +3549,10 @@ my $update_vm_api = sub {
             }
         }
 
-        # 'ipl' last, it is checked against the devices added in the same call
-        foreach my $opt (sort { ($a eq 'ipl') <=> ($b eq 'ipl') } keys %$param) { # add/change
+        # drives in the order of their index (ckd2 before ckd10), so that the volumes they
+        # allocate or import are numbered like them; 'ipl' last, it is checked against the
+        # devices added in the same call
+        foreach my $opt (PVE::QemuServer::Drive::sort_config_update_keys(keys %$param)) {
             $modified->{$opt} = 1;
             $conf = PVE::QemuConfig->load_config($vmid); # update/reload
             next
@@ -5928,7 +5930,9 @@ __PACKAGE__->register_method({
                 my $total_jobs = scalar(keys %{$drives});
                 my $i = 1;
 
-                foreach my $opt (sort keys %$drives) {
+                # in the order of the drives (ckd2 before ckd10), so the volumes are numbered
+                # like them
+                foreach my $opt (PVE::QemuServer::Drive::sort_drive_keys(keys %$drives)) {
                     my $drive = $drives->{$opt};
                     my $skipcomplete = ($total_jobs != $i); # finish after last drive
                     my $completion = $skipcomplete ? 'skip' : 'complete';

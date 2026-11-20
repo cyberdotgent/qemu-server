@@ -935,6 +935,22 @@ is_deeply(
     'drive keys by interface and index',
 );
 
+# a config update: drives in the order of their index, 'ipl' last
+is_deeply(
+    [
+        PVE::QemuServer::Drive::sort_config_update_keys(
+            qw(ckd10 ipl ckd2 name ckd0 fba1 ckd1 tape0 net0),
+        ),
+    ],
+    [qw(ckd0 ckd1 ckd2 ckd10 fba1 name net0 tape0 ipl)],
+    'config update keys: drives by index, ipl last',
+);
+is_deeply(
+    [PVE::QemuServer::Drive::sort_config_update_keys(map { "ckd$_" } reverse 0 .. 35)],
+    [map { "ckd$_" } 0 .. 35],
+    'config update keys: 36 CKD drives',
+);
+
 # the size of the disk an s390x VM IPLs from
 is(
     PVE::QemuServer::Drive::bootdisk_size(

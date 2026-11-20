@@ -1215,6 +1215,13 @@ sub sort_drive_keys {
     } @_;
 }
 
+# The keys of a config update in the order they are applied: by interface and index (see
+# sort_drive_keys()), 'ipl' last, as it is checked against the devices added by the same update.
+sub sort_config_update_keys {
+    my @keys = sort_drive_keys(@_);
+    return ((grep { $_ ne 'ipl' } @keys), (grep { $_ eq 'ipl' } @keys));
+}
+
 sub bootdisk_size {
     my ($storecfg, $conf) = @_;
 
