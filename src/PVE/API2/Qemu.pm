@@ -6358,6 +6358,27 @@ __PACKAGE__->register_method({
             }
             die "failed to parse source disk for target disk format - $@\n" if !$drive;
 
+            # What the update of the target config would refuse, before the volume is renamed:
+            # DASDs only on s390x, a free device number, a usable CKD volume.
+            if (
+                $target_disk !~ /^unused\d+$/ && PVE::QemuServer::Drive::drive_is_dasd($drive)
+            ) {
+                die "VM $target_vmid: DASDs are only supported on s390x\n"
+                    if PVE::QemuServer::Helpers::get_vm_arch($target_conf) ne 's390x';
+                if (defined($drive->{devno})) {
+                    eval {
+                        PVE::QemuServer::CCW::check_devno_conflicts(
+                            $target_conf,
+                            0,
+                            { $target_disk => "devno=$drive->{devno}" },
+                        );
+                    };
+                    die "VM $target_vmid: $@" if $@;
+                }
+                PVE::QemuServer::DASD::check_ckd_volume($storecfg, $source_volid, 1)
+                    if $drive->{interface} eq 'ckd';
+            }
+
             my $repl_conf = PVE::ReplicationConfig->new();
             if ($repl_conf->check_for_existing_jobs($target_vmid, 1)) {
                 my $format = (PVE::Storage::parse_volname($storecfg, $source_volid))[6];
@@ -6400,6 +6421,45 @@ __PACKAGE__->register_method({
 
                             $drive->{file} = $new_volid;
 
+                            # The target config first: if it refuses the disk, the volume gets its
+                            # name back and stays in the source config.
+                            my $drive_string = PVE::QemuServer::print_drive($drive);
+                            eval {
+                                if ($target_disk =~ /^unused\d+$/) {
+                                    $target_conf->{$target_disk} = $drive_string;
+                                    PVE::QemuConfig->write_config($target_vmid, $target_conf);
+                                } else {
+                                    &$update_vm_api(
+                                        {
+                                            node => $node,
+                                            vmid => $target_vmid,
+                                            digest => $target_digest,
+                                            $target_disk => $drive_string,
+                                        },
+                                        1,
+                                    );
+                                }
+                            };
+                            if (my $err = $@) {
+                                my ($source_name) = $source_volname =~ m!([^/]+)$!;
+                                eval {
+                                    PVE::Storage::rename_volume(
+                                        $storecfg, $new_volid, $vmid, $source_name,
+                                    );
+                                };
+                                if (my $rename_err = $@) {
+                                    chomp($rename_err);
+                                    warn "unable to rename '$new_volid' back to '$source_volid'"
+                                        . " ($rename_err), it is in neither config: add it again"
+                                        . " with 'qm disk rescan --vmid $target_vmid'\n";
+                                } else {
+                                    print "volume renamed back to '$source_volid'\n";
+                                }
+                                chomp($err);
+                                die "cannot move disk '$disk' of VM $vmid to VM $target_vmid as"
+                                    . " '$target_disk' - $err\n";
+                            }
+
                             my $boot_order = PVE::QemuServer::device_bootorder($source_conf);
                             if (defined(delete $boot_order->{$disk})) {
                                 print "removing disk '$disk' from boot order config\n";
@@ -6414,23 +6474,6 @@ __PACKAGE__->register_method({
                             delete $source_conf->{$disk};
                             print "removing disk '${disk}' from VM '${vmid}' config\n";
                             PVE::QemuConfig->write_config($vmid, $source_conf);
-
-                            my $drive_string = PVE::QemuServer::print_drive($drive);
-
-                            if ($target_disk =~ /^unused\d+$/) {
-                                $target_conf->{$target_disk} = $drive_string;
-                                PVE::QemuConfig->write_config($target_vmid, $target_conf);
-                            } else {
-                                &$update_vm_api(
-                                    {
-                                        node => $node,
-                                        vmid => $target_vmid,
-                                        digest => $target_digest,
-                                        $target_disk => $drive_string,
-                                    },
-                                    1,
-                                );
-                            }
 
                             # remove possible replication snapshots
                             if (
