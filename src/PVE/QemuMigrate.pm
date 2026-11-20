@@ -224,6 +224,8 @@ sub prepare {
         die "can't migrate running VM without --online\n" if !$online;
         $running = $pid;
 
+        PVE::QemuServer::Helpers::warn_ram_save_on_nested_kvm($conf);
+
         if ($self->{is_replicated} && !$self->{replication_jobcfg}) {
             if ($self->{opts}->{force}) {
                 $self->log(

@@ -229,6 +229,9 @@ my sub storage_allows_vmstate {
 sub __snapshot_save_vmstate {
     my ($class, $vmid, $conf, $snapname, $storecfg, $statestorage, $suspend) = @_;
 
+    # RAM snapshot or hibernation
+    PVE::QemuServer::Helpers::warn_ram_save_on_nested_kvm($conf);
+
     # use given storage or search for one from the config
     my $target = $statestorage;
 

@@ -9,6 +9,7 @@ use JSON;
 
 use PVE::INotify;
 use PVE::ProcFSTools;
+use PVE::RESTEnvironment;
 use PVE::Tools;
 
 use base 'Exporter';
@@ -333,6 +334,46 @@ sub get_s390x_consoles {
 sub is_linux_ostype {
     my ($ostype) = @_;
     return ($ostype // 'other') =~ m/^l\d\d$/;
+}
+
+# Whether the contents of /proc/sysinfo of an s390x node ($text) say that it runs as a KVM guest.
+# 'VM00' is the hypervisor level closest to the node (STSI 3.2.2), its 'Control Program' is
+# "KVM/Linux" under KVM and "z/VM <version>" under z/VM. Without a VM level, the node runs
+# directly in a logical partition.
+sub sysinfo_is_kvm_guest {
+    my ($text) = @_;
+
+    for my $line (split(/\n/, $text // '')) {
+        my ($control_program) = $line =~ m/^VM00 Control Program:\s*(.*?)\s*$/ or next;
+        return $control_program =~ m!^KVM\b! ? 1 : 0;
+    }
+    return 0;
+}
+
+my $node_is_kvm_guest;
+
+# Whether this node runs as a KVM guest (s390x only), see sysinfo_is_kvm_guest().
+sub node_is_kvm_guest {
+    if (!defined($node_is_kvm_guest)) {
+        my $text = -e '/proc/sysinfo' ? eval { PVE::Tools::file_get_contents('/proc/sysinfo') } : undef;
+        $node_is_kvm_guest = sysinfo_is_kvm_guest($text);
+    }
+    return $node_is_kvm_guest;
+}
+
+# Saving the RAM of a running VM (RAM snapshot, hibernation, live migration) uses dirty page
+# logging. On a node that runs as a KVM guest (nested KVM), that can hang some non-Linux mainframe
+# guests afterwards, in a logical partition it does not. Warns about it in the task
+# log.
+sub warn_ram_save_on_nested_kvm {
+    my ($conf) = @_;
+
+    return if get_vm_arch($conf) ne 's390x' || is_linux_ostype($conf->{ostype});
+    return if !node_is_kvm_guest();
+    PVE::RESTEnvironment::log_warn(
+        "this node runs as a KVM guest; saving the RAM of non-Linux mainframe guests can hang"
+            . " them on nested KVM",
+    );
 }
 
 # The 3270 terminals ('terminalN') of an s390x VM, CCW devices that QEMU serves over TN3270 on a

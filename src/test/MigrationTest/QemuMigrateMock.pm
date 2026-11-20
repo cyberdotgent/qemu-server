@@ -235,6 +235,8 @@ $qemu_server_helpers_module->mock(
     vm_running_locally => sub {
         return $vm_status->{running} && !$vm_stop_executed;
     },
+    # not on the node that runs the tests
+    node_is_kvm_guest => sub { return 0 },
 );
 
 my $qemu_server_machine_module = Test::MockModule->new("PVE::QemuServer::Machine");
