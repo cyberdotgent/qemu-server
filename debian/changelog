@@ -1,3 +1,40 @@
+qemu-server (9.2.22+s390x1) trixie; urgency=medium
+
+  * s390x port, rebased onto 9.2.22:
+    - architecture support: s390x CPU config, the s390-ccw-virtio machine and
+      the versioned mainframe machine types (new VMs get their alias),
+      virtio-ccw devices with stable device numbers, refusal of what the
+      machines do not have (PCI passthrough, IDE/SATA, audio, virtiofs,
+      vIOMMU, SEV/TDX, TPM, OVMF, TCG); no hotplug except VirtIO disks and
+      network devices.
+    - consoles by OS type: the VT220 SCLP console for Linux; the SCLP
+      line-mode console (hardcopy log with rotation, syslog forwarding, code
+      page option, sclp-log API) and the integrated 3270 console for other
+      OS types, plus 3270 terminals. The 3270 sessions run in c3270 for the
+      lifetime of the VM (pve-qemu-3270@.service, sandboxed).
+    - CCW devices with managed device numbers: FBA and CKD DASDs (creation,
+      import of Hercules images, live migration of local CKD volumes), tape
+      drives with AWSTAPE media, qeth network adapters, network boot.
+    - 'ipl' option to IPL from any IPL-capable CCW device (load parameter),
+      with the IPL methods queried from the QEMU binary.
+    - VM status: crash information of a panicked guest ('panic-info'); a
+      disabled wait of a guest that is not Linux is reported apart from a
+      crash ('disabled-wait', the PSW address); a Linux kernel panic stays a
+      crash.
+    - RAM snapshots, hibernation and live migration with CKD, tape and qeth
+      devices; a warning for mainframe guests on nested KVM.
+    - VM state only on storages that allow VM state volumes (no fallback to a
+      'local' storage without them).
+    - OVA export (with the tape media) and OVA/OVF import improvements: drive
+      options of the import metadata, new MAC addresses by default, any file
+      based import working storage.
+    - restore maps the DASDs of s390x VMs; migration enables the return path.
+    - detect the version of QEMU-mod builds.
+    - packaging: no OVMF and swtpm on s390x; depend on the s390x builds of
+      libpve-storage-perl and pve-qemu-kvm, c3270 and tmux.
+
+ -- Yvan Janssens <yvanj@cyber.gent>  Sat, 21 Nov 2026 17:07:45 +0100
+
 qemu-server (9.2.22) trixie; urgency=medium
 
   * d/control: require pve-cluster 9.1.13, which ships the helper that backups
