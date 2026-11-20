@@ -713,26 +713,35 @@ my sub create_disks : prototype($$$$$$$$$$$) {
         PVE::QemuServer::CCW::check_devno_conflicts($conf, 0, $override);
     };
 
-    # Check an image to import as DASD. Returns the parsed header of a CKD image.
+    # Check an image to import as DASD, before anything is allocated: also whether the target
+    # storage $storeid with the format $format can hold a CKD image. Returns the
+    # parsed header of a CKD image.
     my $check_dasd_import_source = sub {
-        my ($ds, $path, $format, $size) = @_;
+        my ($ds, $path, $format, $size, $storeid, $target_format) = @_;
 
         die "$ds: could not get the size of '$path'\n" if !$size;
         if ($ds =~ m/^ckd/) {
-            return PVE::QemuServer::DASD::check_ckd_import_source($path, $format, $size);
+            my $header = PVE::QemuServer::DASD::check_ckd_import_source($path, $format, $size);
+            PVE::QemuServer::DASD::assert_ckd_target_storage(
+                $storecfg, $storeid, $target_format, $header, $ds,
+            );
+            return $header;
         }
         PVE::QemuServer::DASD::check_fba_import_source($path, $format, $size);
         return;
     };
 
     # The cylinders of an imported CKD volume are those of the source image: the storage may have
-    # rounded up the size of the new volume (LVM extents, ZFS volblocksize).
+    # rounded up the size of the new volume (LVM extents, ZFS volblocksize). Returns the size of
+    # the volume, which may have been cut to the cylinders.
     my $finish_dasd_import = sub {
         my ($ds, $disk, $volid, $source_header) = @_;
 
         return if $ds !~ m/^ckd/;
-        my $header = PVE::QemuServer::DASD::finish_ckd_import($storecfg, $volid, $source_header);
+        my $header =
+            PVE::QemuServer::DASD::finish_ckd_import($storecfg, $volid, $source_header);
         $disk->{cylinders} = $header->{cylinders};
+        return $header->{size};
     };
 
     # An existing volume attached as DASD. Unless it is the volume the drive has already, check it
@@ -914,6 +923,10 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                             scalar(PVE::Storage::path($storecfg, $source)),
                             $source_format,
                             scalar(PVE::Storage::volume_size_info($storecfg, $source)),
+                            $storeid,
+                            PVE::QemuServer::resolve_dst_disk_format(
+                                $storecfg, $storeid, $source, $disk->{format},
+                            ),
                         );
                     }
 
@@ -952,8 +965,11 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                         eval {
                             ($dst_volid, $size) =
                                 $import_from_volid->($storecfg, $source, $dest_info, $vollist);
-                            $finish_dasd_import->($ds, $disk, $dst_volid, $source_header)
-                                if $dasd;
+                            if ($dasd) {
+                                my $fitted =
+                                    $finish_dasd_import->($ds, $disk, $dst_volid, $source_header);
+                                $size = $fitted if defined($fitted);
+                            }
 
                             # remove extracted volumes after importing
                             if ($needs_extraction) {
@@ -976,8 +992,16 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                         my $source_header;
                         if ($dasd) {
                             die "$ds: live import is not supported for DASDs\n" if $live_import;
-                            $source_header =
-                                $check_dasd_import_source->($ds, $source, $source_format, $size);
+                            $source_header = $check_dasd_import_source->(
+                                $ds,
+                                $source,
+                                $source_format,
+                                $size,
+                                $storeid,
+                                PVE::QemuServer::resolve_dst_disk_format(
+                                    $storecfg, $storeid, undef, $disk->{format},
+                                ),
+                            );
                         }
 
                         if ($live_import && $ds ne 'efidisk0') {
@@ -1002,7 +1026,11 @@ my sub create_disks : prototype($$$$$$$$$$$) {
 
                             push @$vollist, $dst_volid; # freed if anything below fails
 
-                            $finish_dasd_import->($ds, $disk, $dst_volid, $source_header) if $dasd;
+                            if ($dasd) {
+                                my $fitted =
+                                    $finish_dasd_import->($ds, $disk, $dst_volid, $source_header);
+                                $size = $fitted if defined($fitted);
+                            }
 
                             # change imported disk to a base volume in case the VM is a template
                             if (PVE::QemuConfig->is_template($conf)) {

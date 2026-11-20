@@ -648,6 +648,22 @@ sub export_ova {
             my $capacity = PVE::Storage::volume_size_info($storecfg, $src)
                 or die "$disk->{key}: could not get the size of '$src'\n";
 
+            # a CKD volume as the exact image, without the slack of its storage
+            my @source = ('-f', $src_format, $path);
+            if ($disk->{key} =~ m/^ckd\d+$/) {
+                my $header = PVE::QemuServer::DASD::ckd_copy_source_header($storecfg, $src);
+                my $exact = PVE::QemuServer::DASD::ckd_volume_size($header->{cylinders});
+                if ($capacity > $exact) {
+                    print "$disk->{key}: exporting the $header->{cylinders} cylinders of the CKD"
+                        . " image ($exact of $capacity bytes)\n";
+                    @source = (
+                        '--image-opts',
+                        PVE::QemuServer::DASD::image_opts_cut($path, $src_format, $exact),
+                    );
+                    $capacity = $exact;
+                }
+            }
+
             my $file = "$name-$disk->{key}.$finfo->{ext}";
             print "$disk->{key}: exporting '$src' to $file ($format)\n";
             run_command(
@@ -655,12 +671,11 @@ sub export_ova {
                     '/usr/bin/qemu-img',
                     'convert',
                     '-p',
-                    '-f',
-                    $src_format,
+                    @source[0 .. $#source - 1],
                     '-O',
                     $format,
                     $finfo->{options}->@*,
-                    $path,
+                    $source[-1],
                     "$stage/$file",
                 ],
                 errmsg => "$disk->{key}: unable to export '$src'",

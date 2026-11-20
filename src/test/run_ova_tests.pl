@@ -386,6 +386,8 @@ SKIP: {
             run_command([
                 '/usr/bin/qemu-img', 'convert', '-f', $src_format, '-O', 'raw', $src, $orig,
             ]);
+            # a CKD volume without the slack of its storage
+            truncate($orig, $size) if $key eq 'ckd0';
             my $same = eval { run_command(['cmp', $orig, $back]); 1 };
             ok($same, "export ($format): $key content byte for byte");
         }
@@ -399,7 +401,7 @@ SKIP: {
         my $xpc = xpc_of($ovf);
         is(
             $xpc->findvalue('//ovf:Disk[@ovf:diskId="ckd0"]/@ovf:capacity'),
-            -s $ckd,
+            $size,
             "export ($format): CKD capacity in bytes",
         );
     }

@@ -7252,6 +7252,22 @@ my $parse_backup_hints = sub {
     return $virtdev_hash;
 };
 
+# Complete and fit the restored volumes of CKD DASDs (see
+# PVE::QemuServer::DASD::fit_copied_ckd_volume()): cut slack on file based storages, refuse those
+# that QEMU could not use on their storage. The backup does not tell the CKD header,
+# so this is only possible once the data is restored.
+my $restore_fit_ckd_volumes = sub {
+    my ($storecfg, $virtdev_hash) = @_;
+
+    for my $virtdev (sort keys %$virtdev_hash) {
+        next if $virtdev !~ m/^ckd\d+$/;
+        my $d = $virtdev_hash->{$virtdev};
+        next if $d->{is_cloudinit} || !$d->{volid};
+        eval { PVE::QemuServer::DASD::fit_copied_ckd_volume($storecfg, $d->{volid}) };
+        die "$virtdev: $@" if $@;
+    }
+};
+
 # Helper to allocate and activate all volumes required for a restore
 #
 # $storecfg: Storage configuration
@@ -7773,6 +7789,7 @@ sub restore_proxmox_backup_archive {
             print "restore proxmox backup image: $dbg_cmdstring\n";
             run_command($pbs_restore_cmd);
         }
+        $restore_fit_ckd_volumes->($storecfg, $virtdev_hash) if !$options->{live};
 
         $fh->seek(0, 0) || die "seek failed - $!\n";
 
@@ -7957,6 +7974,7 @@ sub restore_external_archive {
             }
             die $err if $err;
         }
+        $restore_fit_ckd_volumes->($storecfg, $virtdev_hash);
 
         $fh->seek(0, 0) || die "seek failed - $!\n";
 
@@ -8444,6 +8462,8 @@ sub restore_vma_archive {
 
         print "restore vma archive: $dbg_cmdstring\n";
         run_command($commands, input => $input, outfunc => $outfunc, afterfork => $openfifo);
+
+        $restore_fit_ckd_volumes->($cfg, $virtdev_hash);
     };
     my $err = $@;
     $err = $parser_err if $err && defined($parser_err);
@@ -8791,6 +8811,22 @@ sub clone_disk {
             $size = PVE::Storage::volume_size_info($storecfg, $drive->{file}, 10);
         }
         $source->{size} = $size;
+
+        # A CKD image: refuse a storage that QEMU could not use it on before anything is
+        # allocated, cut the slack after its cylinders on file based storages after the copy.
+        # Not for a drive mirror, which needs a target as large as the source and
+        # completes later.
+        my $ckd_header;
+        if (($dst_drivename // $src_drivename // '') =~ m/^ckd\d+$/ && !drive_is_cloudinit($drive)) {
+            $ckd_header = PVE::QemuServer::DASD::ckd_copy_source_header(
+                $storecfg, $drive->{file}, $running,
+            );
+            PVE::QemuServer::DASD::assert_ckd_target_storage(
+                $storecfg, $storeid, $dst_format, $ckd_header, $dst_drivename // $src_drivename,
+            );
+            $ckd_header = undef if $use_drive_mirror;
+        }
+
         if (defined($dest->{'volume-name'}) && !defined($name)) {
             # an imported DASD keeps the name of its source volume, if it is free
             $newvolid = PVE::QemuServer::DASD::alloc_named_volume(
@@ -8828,6 +8864,8 @@ sub clone_disk {
             clone_disk_copy_data(
                 $storecfg, $source, $dest, $use_drive_mirror, $jobs, $completion, $qga, $bwlimit,
             );
+            PVE::QemuServer::DASD::finish_ckd_import($storecfg, $newvolid, $ckd_header)
+                if $ckd_header;
         }
     }
 

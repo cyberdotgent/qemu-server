@@ -5,6 +5,7 @@ use v5.36;
 use lib qw(..);
 
 use File::Temp qw(tempdir);
+use JSON;
 use Test::MockModule;
 use Test::More;
 
@@ -15,6 +16,11 @@ use PVE::QemuServer::IPL;
 use PVE::QemuMigrate::Helpers;
 
 my $cyl = 852480;
+
+# QEMU-mod up to pve-qemu-kvm 11.1.90-1+s390x9: no slack after the cylinders of zPDT images
+my $dasd = Test::MockModule->new('PVE::QemuServer::DASD');
+our $slack_supported = 0;
+$dasd->mock(ckd_slack_supported => sub { return $slack_supported });
 
 is(PVE::QemuServer::DASD::ckd_cylinder_size(), $cyl, 'cylinder size');
 is(PVE::QemuServer::DASD::ckd_volume_size(3339), 512 + 3339 * $cyl, '3390-3 volume size');
@@ -72,6 +78,7 @@ is_deeply(
         cylinders => 3339,
         serial => '876955967561',
         'high-cylinder' => 3339,
+        'file-sequence' => 0,
     },
     'header with cylinder count, slack',
 );
@@ -107,7 +114,6 @@ substr($ckd3380, 8, 9, pack('V V C', 15, 47968, 0x80));
 like($parse->($ckd3380, 1024 * 1024 * 1024), qr/only 3390 volumes/, '3380 refused');
 
 # FBA import checks
-my $dasd = Test::MockModule->new('PVE::QemuServer::DASD');
 my $head = "\0" x 512;
 $dasd->mock(read_image_head => sub { return $head; });
 
@@ -287,6 +293,8 @@ SKIP: {
         parse_volname =>
             sub { return ('images', 'vm-100-SYSRS1.raw', 100, undef, undef, undef, 'raw'); },
         volume_size_info => sub { return -s $vol; },
+        parse_volume_id => sub { return ('local-lvm', 'vm-100-SYSRS1'); },
+        storage_config => sub { return { type => 'lvmthin', content => { images => 1 } }; },
     );
     open(my $fh, '>', $vol) or die;
     close($fh);
@@ -536,6 +544,189 @@ for my $test (
     );
     like($warning, qr/ckd0: unable to allocate the volume 'vm-301-SYSRS1'.*default volume name/,
         'taken name: warning');
+}
+
+# zPDT images: file sequence 0x04 and a cylinder count
+my $zpdt = $header;
+substr($zpdt, 17, 1, "\x04");
+is($parse->($zpdt, 512 + 3339 * $cyl)->{'file-sequence'}, 4, 'zPDT: file sequence');
+is($parse->($zpdt, 512 + 3339 * $cyl)->{cylinders}, 3339, 'zPDT: exact length');
+like($parse->($zpdt, 512 + 3339 * $cyl + 16384), qr/whole cylinders/, 'zPDT: slack refused');
+is(
+    eval { PVE::QemuServer::DASD::parse_ckd_header($zpdt, 512 + 3339 * $cyl + 16384, 1) }
+        ->{cylinders},
+    3339,
+    'zPDT: slack allowed for the source of a copy',
+);
+like(
+    (eval { PVE::QemuServer::DASD::parse_ckd_header($multi, 512 + 10000 * $cyl, 1) } // $@),
+    qr/multi-file/,
+    'multi-file member is no image with slack',
+);
+ok(PVE::QemuServer::DASD::ckd_image_needs_exact_size({ 'file-sequence' => 4 }), 'zPDT: exact size');
+ok(!PVE::QemuServer::DASD::ckd_image_needs_exact_size({ 'file-sequence' => 0 }), 'Hercules: slack ok');
+{
+    local $slack_supported = 1;
+    ok(
+        !PVE::QemuServer::DASD::ckd_image_needs_exact_size({ 'file-sequence' => 4 }),
+        'zPDT with a QEMU-mod that accepts slack',
+    );
+    is($parse->($zpdt, 512 + 3339 * $cyl + 16384)->{cylinders}, 3339, 'zPDT: slack accepted');
+    like($parse->($zpdt, 512 + 3338 * $cyl), qr/too short/, 'zPDT: shorter still refused');
+}
+is(
+    substr(PVE::QemuServer::DASD::ckd_header(3339, '876955967561', 'CKD_P064', 4), 0, 32),
+    substr($zpdt, 0, 32),
+    'header with a file sequence',
+);
+
+{
+    my $storage = Test::MockModule->new('PVE::Storage');
+    $storage->mock(storage_config => sub { return $_[0]->{ $_[1] } });
+    my $storecfg = {
+        local => { type => 'dir', path => '/var/lib/vz' },
+        'local-zfs' => { type => 'zfspool' },
+        lvm => { type => 'lvm', 'snapshot-as-volume-chain' => 1 },
+    };
+    ok(PVE::QemuServer::DASD::storage_has_exact_size($storecfg, 'local', 'qcow2'), 'dir: exact');
+    ok(!PVE::QemuServer::DASD::storage_has_exact_size($storecfg, 'local', 'vmdk'), 'vmdk: no');
+    ok(!PVE::QemuServer::DASD::storage_has_exact_size($storecfg, 'local-zfs', 'raw'), 'zvol: no');
+    ok(!PVE::QemuServer::DASD::storage_has_exact_size($storecfg, 'lvm', 'qcow2'), 'chain: no');
+    my $zpdt_header = $parse->($zpdt, 512 + 3339 * $cyl);
+    eval {
+        PVE::QemuServer::DASD::assert_ckd_target_storage(
+            $storecfg, 'local', 'raw', $zpdt_header, 'ckd0',
+        );
+    };
+    is($@, '', 'zPDT image to a directory storage');
+    eval {
+        PVE::QemuServer::DASD::assert_ckd_target_storage(
+            $storecfg, 'local-zfs', 'raw', $zpdt_header, 'ckd0',
+        );
+    };
+    like(
+        $@,
+        qr/^ckd0: the CKD image needs a volume of exactly 2846431232 bytes .* file sequence 0x04 .*'local-zfs' \(zfspool\) rounds the size up.*file based storage/,
+        'zPDT image to a zvol refused',
+    );
+    eval {
+        PVE::QemuServer::DASD::assert_ckd_target_storage(
+            $storecfg, 'local-zfs', 'raw', $parse->($header, 512 + 3339 * $cyl), 'ckd0',
+        );
+    };
+    is($@, '', 'Hercules image to a zvol');
+    {
+        local $slack_supported = 1;
+        eval {
+            PVE::QemuServer::DASD::assert_ckd_target_storage(
+                $storecfg, 'local-zfs', 'raw', $zpdt_header, 'ckd0',
+            );
+        };
+        is($@, '', 'zPDT image to a zvol, QEMU-mod accepts slack');
+    }
+}
+
+is(
+    PVE::QemuServer::DASD::image_opts_cut('/dev/zvol/rpool/vm-1-disk-0', 'raw', 512),
+    'driver=raw,offset=0,size=512,file.driver=file,file.filename=/dev/zvol/rpool/vm-1-disk-0',
+    'cut image options, raw',
+);
+is(
+    PVE::QemuServer::DASD::image_opts_cut('/var/lib/vz/images/1/a.qcow2', 'qcow2', 1024),
+    'driver=raw,offset=0,size=1024,file.driver=qcow2,file.file.driver=file,'
+        . 'file.file.filename=/var/lib/vz/images/1/a.qcow2',
+    'cut image options, qcow2',
+);
+like(
+    (eval { PVE::QemuServer::DASD::image_opts_cut('rbd:pool/x', 'raw', 512) } // $@),
+    qr/not a local file/,
+    'cut image options: local paths only',
+);
+
+# cutting the slack of copied volumes, with the real tools
+SKIP: {
+    skip 'qemu-img/qemu-io not installed', 10 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
+
+    my $dir = tempdir(CLEANUP => 1);
+    my $vol;
+    my $format;
+    my $storeid = 'local';
+    my $storecfg = {
+        local => { type => 'dir', path => $dir, content => { images => 1 } },
+        'local-zfs' => { type => 'zfspool', content => { images => 1 } },
+    };
+    my $storage = Test::MockModule->new('PVE::Storage');
+    $storage->mock(
+        activate_volumes => sub { },
+        path => sub { return $vol },
+        parse_volname => sub { return ('images', 'x', 100, undef, undef, undef, $format) },
+        volume_size_info => sub {
+            my $info = '';
+            PVE::Tools::run_command(
+                ['/usr/bin/qemu-img', 'info', '--output=json', '-f', $format, $vol],
+                outfunc => sub { $info .= shift },
+            );
+            return JSON::decode_json($info)->{'virtual-size'};
+        },
+        parse_volume_id => sub { return ($storeid, 'x') },
+        storage_config => sub { return $_[0]->{ $_[1] } },
+    );
+    my $exact = 512 + 1113 * $cyl;
+    my $zpdt_1113 = PVE::QemuServer::DASD::ckd_header(1113, '000000000001', 'CKD_P064', 4);
+    for my $f (qw(raw qcow2)) {
+        $format = $f;
+        $vol = "$dir/zpdt.$f";
+        PVE::Tools::run_command(
+            ['/usr/bin/qemu-img', 'create', '-f', $f, $vol, $exact + 16384],
+            outfunc => sub { },
+        );
+        PVE::QemuServer::DASD::write_image_head($vol, $f, $zpdt_1113);
+        my $source = PVE::QemuServer::DASD::ckd_copy_source_header($storecfg, 'x');
+        is($source->{cylinders}, 1113, "$f: copy source with slack");
+        my $res = PVE::QemuServer::DASD::finish_ckd_import($storecfg, 'x', $source);
+        is($res->{size}, $exact, "$f: slack cut on file based storage");
+        is(
+            PVE::QemuServer::DASD::check_ckd_volume($storecfg, 'x')->{cylinders},
+            1113,
+            "$f: volume usable",
+        );
+        is(PVE::QemuServer::DASD::read_image_head($vol, $f), $zpdt_1113, "$f: header unchanged");
+    }
+    # a zvol: the slack stays, QEMU-mod up to +s390x9 refuses it
+    $storeid = 'local-zfs';
+    $format = 'raw';
+    $vol = "$dir/zvol.raw";
+    PVE::Tools::run_command(
+        ['/usr/bin/qemu-img', 'create', '-f', 'raw', $vol, $exact + 16384],
+        outfunc => sub { },
+    );
+    PVE::QemuServer::DASD::write_image_head($vol, 'raw', $zpdt_1113);
+    my $source = PVE::QemuServer::DASD::ckd_copy_source_header($storecfg, 'x');
+    eval { PVE::QemuServer::DASD::finish_ckd_import($storecfg, 'x', $source) };
+    like($@, qr/rounds the size up/, 'zvol with slack refused');
+    like(
+        (eval { PVE::QemuServer::DASD::check_ckd_volume($storecfg, 'x') } // $@),
+        qr/needs a volume of exactly $exact bytes.*move it to a file based storage/,
+        'attaching a zvol with slack: what to do',
+    );
+}
+
+# the cylinders of a CKD volume for QEMU-mod builds with the property
+{
+    my $helpers = Test::MockModule->new('PVE::QemuServer::Helpers');
+    my $props = {};
+    $helpers->mock(
+        get_command_for_arch => sub { return '/usr/bin/qemu-system-s390x' },
+        kvm_device_has_property => sub { return $props->{"$_[1].$_[2]"} ? 1 : 0 },
+    );
+    my $drive = { interface => 'ckd', cylinders => 10017 };
+    is(PVE::QemuServer::DASD::identity_properties('ckd0', $drive, 's390x'), '', 'no cylinders');
+    $props->{'eckd-ccw.cylinders'} = 1;
+    is(
+        PVE::QemuServer::DASD::identity_properties('ckd0', $drive, 's390x'),
+        ',cylinders=10017',
+        'cylinders for QEMU',
+    );
 }
 
 done_testing();

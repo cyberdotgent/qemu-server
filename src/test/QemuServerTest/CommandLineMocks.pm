@@ -418,6 +418,8 @@ $qemu_server_helpers->mock(
         my ($binary, $type, $property) = @_;
         # QEMU-mod with the hardcopy of the line-mode console
         return 1 if $type eq 'sclplmconsole' && ($property eq 'hardcopy' || $property eq 'codepage');
+        # the cylinders of a CKD volume: not yet (pve-qemu-kvm 11.1.90-1+s390x9)
+        return 0 if $type eq 'eckd-ccw' && $property eq 'cylinders';
         return $qemu_server_helpers->original('kvm_device_has_property')->(@_);
     },
     kvm_machine_types => sub {
