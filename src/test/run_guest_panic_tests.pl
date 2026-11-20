@@ -141,8 +141,20 @@ my $wait = {
 is_deeply(
     PVE::QemuServer::guest_panic_status_fields($wait),
     { 'panic-info' => $wait, 'disabled-wait' => '0000000000000ccc' },
-    's390x disabled wait: PSW address',
+    's390x disabled wait, no OS type: PSW address',
 );
+is_deeply(
+    PVE::QemuServer::guest_panic_status_fields($wait, 'other'),
+    { 'panic-info' => $wait, 'disabled-wait' => '0000000000000ccc' },
+    's390x disabled wait, OS type other: PSW address',
+);
+for my $ostype (qw(l26 l24)) {
+    is_deeply(
+        PVE::QemuServer::guest_panic_status_fields($wait, $ostype),
+        { 'panic-info' => $wait },
+        "s390x disabled wait, OS type $ostype: a kernel panic, no disabled wait",
+    );
+}
 my $loop = { %$wait, reason => 'pgmint-loop' };
 is_deeply(
     PVE::QemuServer::guest_panic_status_fields($loop),

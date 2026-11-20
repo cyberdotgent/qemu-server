@@ -2591,10 +2591,11 @@ our $vmstatus_return_properties = {
         },
     },
     'disabled-wait' => {
-        description => "s390x: the guest stopped its CPU with a disabled wait PSW (QEMU reports"
-            . " it as the 'guest-panicked' run state), which mainframe operating systems also do"
-            . " when they shut down: the instruction address of that PSW (hexadecimal, 16"
-            . " digits), which often holds a wait state code.",
+        description => "s390x, guests that are not Linux: the guest stopped its CPU with a"
+            . " disabled wait PSW (QEMU reports it as the 'guest-panicked' run state), which"
+            . " mainframe operating systems also do when they shut down: the instruction address"
+            . " of that PSW (hexadecimal, 16 digits), which often holds a wait state code. A Linux"
+            . " kernel panic also ends in a disabled wait, so it is not reported for Linux guests.",
         type => 'string',
         optional => 1,
     },
@@ -2951,7 +2952,8 @@ sub vmstatus {
 
         if ($res->{$vmid}->{qmpstatus} eq 'guest-panicked') {
             my $panic_info = eval { get_guest_panic_info($vmid) };
-            my $fields = guest_panic_status_fields($panic_info);
+            my $conf = eval { PVE::QemuConfig->load_config($vmid) } // {};
+            my $fields = guest_panic_status_fields($panic_info, $conf->{ostype});
             $res->{$vmid}->{$_} = $fields->{$_} for keys $fields->%*;
         }
     }
@@ -3000,16 +3002,18 @@ sub get_guest_panic_info {
 }
 
 # The status fields for the crash information $panic_info (see get_guest_panic_info()) of a VM in
-# the 'guest-panicked' run state: 'panic-info', and 'disabled-wait' for an s390x CPU that loaded a
-# disabled wait PSW. QEMU reports that as a guest panic, but mainframe operating systems also do
-# it when they shut down (with a wait state code in the PSW), so it is told apart.
+# the 'guest-panicked' run state, with OS type $ostype: 'panic-info', and 'disabled-wait' for an
+# s390x CPU that loaded a disabled wait PSW. QEMU reports that as a guest panic, but mainframe
+# operating systems also do it when they shut down (with a wait state code in the PSW), so it is
+# told apart. Not for Linux guests: a kernel panic ends in a disabled wait there, a crash.
 sub guest_panic_status_fields {
-    my ($panic_info) = @_;
+    my ($panic_info, $ostype) = @_;
 
     return {} if !$panic_info;
     my $res = { 'panic-info' => $panic_info };
     $res->{'disabled-wait'} = $panic_info->{'psw-addr'}
         if $panic_info->{type} eq 's390'
+        && !PVE::QemuServer::Helpers::is_linux_ostype($ostype)
         && ($panic_info->{reason} // '') eq 'disabled-wait'
         && defined($panic_info->{'psw-addr'});
     return $res;
