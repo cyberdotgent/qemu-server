@@ -219,14 +219,11 @@ sub __snapshot_assert_no_blockers {
     PVE::QemuMigrate::Helpers::check_non_migratable_resources($vmconf, $save_vmstate, 0);
 }
 
-# A storage without any VM content type is not excluded: the fallback to 'local' for a VM without
-# disks relies on state volumes being accepted there.
-my sub storage_excludes_vmstate {
+# The state is a volume of type 'vm-state' ('images' allows it too). The VM could not be started
+# again from a state on a storage that does not allow it, such as 'local' without 'images'.
+my sub storage_allows_vmstate {
     my ($scfg) = @_;
-
-    my $content = $scfg->{content};
-    return PVE::Storage::Common::content_allows($content, 'images')
-        && !PVE::Storage::Common::content_allows($content, 'vm-state');
+    return $scfg && PVE::Storage::Common::content_allows($scfg->{content}, 'vm-state');
 }
 
 sub __snapshot_save_vmstate {
@@ -248,7 +245,7 @@ sub __snapshot_save_vmstate {
     my $size = $mem_size * 2 + $driver_state_size;
     my $scfg = PVE::Storage::storage_config($storecfg, $target);
 
-    die "storage '$target' does not allow VM state volumes\n" if storage_excludes_vmstate($scfg);
+    die "storage '$target' does not allow VM state volumes\n" if !storage_allows_vmstate($scfg);
 
     my $name = "vm-$vmid-state-$snapname";
     $name .= ".raw" if $scfg->{path}; # add filename extension for file base storage
@@ -813,12 +810,21 @@ sub find_vmstate_storage {
 
     my ($target, $shared, $local);
 
+    # Only storages that allow VM state volumes and are available here. An ISO image or a tape
+    # medium of the VM may be on another one, and 'local' may have no 'images' (a VM without disks
+    # could not be resumed).
+    my $usable = sub {
+        my ($sid) = @_;
+        my $scfg = PVE::Storage::storage_config($storecfg, $sid, 1);
+        return if !storage_allows_vmstate($scfg);
+        return PVE::Storage::storage_check_enabled($storecfg, $sid, undef, 1);
+    };
+
     foreach_storage_used_by_vm(
         $conf,
         sub {
             my ($sid) = @_;
-            my $scfg = PVE::Storage::storage_config($storecfg, $sid);
-            return if storage_excludes_vmstate($scfg);
+            my $scfg = $usable->($sid) or return;
             my $dst = $scfg->{shared} ? \$shared : \$local;
             $$dst = $sid if !$$dst || $scfg->{path}; # prefer file based storage
         },
@@ -826,8 +832,18 @@ sub find_vmstate_storage {
 
     # second, use shared storage where VM has at least one disk
     # third, use local storage where VM has at least one disk
-    # fall back to local storage
-    $target = $shared // $local // 'local';
+    $target = $shared // $local;
+    return $target if defined($target);
+
+    # fall back to local storage, or else the first file based storage that allows VM states, or
+    # any
+    return 'local' if $usable->('local');
+    my @candidates = grep { $usable->($_) } sort keys %{ $storecfg->{ids} // {} };
+    my ($file_based) = grep { $storecfg->{ids}->{$_}->{path} } @candidates;
+    $target = $file_based // $candidates[0];
+    die "no storage for the VM state: none that allows VM state volumes is available on this"
+        . " node, set 'vmstatestorage'\n"
+        if !defined($target);
 
     return $target;
 }

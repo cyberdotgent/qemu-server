@@ -52,12 +52,13 @@ my $tests = [
         'lvm',
     ],
     ['disk storage that also allows states', "scsi0: both:vm-100-disk-0\n", undef, 'both'],
-    ['fallback for a VM without disks', "memory: 512\n", undef, 'local'],
+    # 'local' allows no VM state volumes here: the first file based storage that does
+    ['fallback for a VM without disks', "memory: 512\n", undef, 'nfs'],
     [
         'fallback if no disk storage allows states',
         "scsi0: disks:vm-100-disk-0\n",
         undef,
-        'local',
+        'nfs',
     ],
     [
         'state storage of the VM configuration',
@@ -72,7 +73,12 @@ my $tests = [
         $refused,
     ],
     ['requested storage', "scsi0: lvm:vm-100-disk-0\n", 'states', 'states'],
-    ['requested storage without VM content', "scsi0: lvm:vm-100-disk-0\n", 'local', 'local'],
+    [
+        'requested storage without VM content',
+        "scsi0: lvm:vm-100-disk-0\n",
+        'local',
+        "storage 'local' does not allow VM state volumes\n",
+    ],
     [
         'requested storage does not allow states',
         "scsi0: lvm:vm-100-disk-0\n",
