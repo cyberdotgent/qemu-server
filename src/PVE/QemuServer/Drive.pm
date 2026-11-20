@@ -1204,10 +1204,25 @@ sub get_bootdisks {
     return \@list;
 }
 
+# Drive keys (or other keys) by interface, then by index: ckd2 before ckd10 (the
+# volumes of a multi-disk import were numbered in hash order).
+sub sort_drive_keys {
+    my $split = sub { $_[0] =~ m/^(\D+)(\d+)$/ ? ($1, $2) : ($_[0], -1) };
+    return sort {
+        my ($a_if, $a_index) = $split->($a);
+        my ($b_if, $b_index) = $split->($b);
+        $a_if cmp $b_if || $a_index <=> $b_index || $a cmp $b
+    } @_;
+}
+
 sub bootdisk_size {
     my ($storecfg, $conf) = @_;
 
     my $bootdisks = get_bootdisks($conf);
+    # s390x: the disk or DASD to IPL from comes first (0 for a VM that IPLs a DASD)
+    if (defined($conf->{ipl}) && $conf->{ipl} =~ m/(?:^|,)(?:device=)?([a-z]+\d+)(?:,|$)/) {
+        $bootdisks = [$1, @$bootdisks];
+    }
     return if !@$bootdisks;
     for my $bootdisk (@$bootdisks) {
         next if !is_valid_drivename($bootdisk);

@@ -249,10 +249,51 @@ sub parse_ckd_header {
     };
 }
 
-# Read the first 512 bytes of an image with qemu-img (any format and protocol). $force_share for
-# an image a running VM has open.
+my $ebcdic_volser_chars = {
+    (map { (0xc1 + $_ => chr(ord('A') + $_)) } 0 .. 8),
+    (map { (0xd1 + $_ => chr(ord('J') + $_)) } 0 .. 8),
+    (map { (0xe2 + $_ => chr(ord('S') + $_)) } 0 .. 7),
+    (map { (0xf0 + $_ => chr(ord('0') + $_)) } 0 .. 9),
+    0x40 => ' ',
+};
+
+# The volume serial (VOLSER) of a CKD image from its first track ($data: the image from its start,
+# header included, at least up to the volume label), or undef. The standard volume label of the
+# mainframe operating systems and Linux on the compatible disk layout is record 3 of cylinder 0, head 0: key 'VOL1',
+# data 'VOL1' followed by the six characters of the VOLSER, in EBCDIC. Only VOLSERs of letters and
+# digits, which can name a volume (see dasd_volume_name()), the national characters (@, #, $) not.
+sub ckd_volser {
+    my ($data) = @_;
+
+    my $pos = CKD_HEADER_SIZE + 5; # the home address of the track: flag, cylinder, head
+    my $vol1 = "\xe5\xd6\xd3\xf1"; # 'VOL1'
+    for (1 .. 8) { # record 0 (no key), 1 and 2 (IPL records), 3
+        return if length($data) < $pos + 8;
+        my ($cc, $hh, $record, $key_length, $data_length) =
+            unpack('n n C C n', substr($data, $pos, 8));
+        return if $cc == 0xffff || $cc != 0 || $hh != 0; # end of track
+        $pos += 8;
+        if ($record == 3) {
+            return if $key_length != 4 || $data_length < 10;
+            return if length($data) < $pos + 4 + 10;
+            return if substr($data, $pos, 4) ne $vol1 || substr($data, $pos + 4, 4) ne $vol1;
+            my $volser = '';
+            for my $byte (unpack('C6', substr($data, $pos + 8, 6))) {
+                my $char = $ebcdic_volser_chars->{$byte} // return;
+                $volser .= $char;
+            }
+            $volser =~ s/ +$//;
+            return $volser =~ m/^[A-Z0-9]+$/ ? $volser : undef;
+        }
+        $pos += $key_length + $data_length;
+    }
+    return;
+}
+
+# Read the first 512 bytes (or $blocks 512-byte blocks) of an image with qemu-img (any format and
+# protocol). $force_share for an image a running VM has open.
 sub read_image_head {
-    my ($path, $format, $force_share) = @_;
+    my ($path, $format, $force_share, $blocks) = @_;
 
     my $dir = File::Temp->newdir('/tmp/pve-dasd-XXXXXX');
     my $out = "$dir/head";
@@ -266,7 +307,7 @@ sub read_image_head {
             '-O',
             'raw',
             'bs=512',
-            'count=1',
+            'count=' . ($blocks // 1),
             "if=$path",
             "of=$out",
         ],
@@ -533,13 +574,18 @@ sub finish_ckd_import {
 }
 
 # Check an image to be imported as a CKD volume, before importing it, slack allowed (see
-# parse_ckd_header()). Returns the parsed header.
+# parse_ckd_header()). Returns the parsed header, with the 'volser' of the volume if it has one.
 sub check_ckd_import_source {
     my ($path, $format, $size) = @_;
 
-    my $data = read_image_head($path, $format);
+    # the header and the first track, with the volume label
+    my $blocks = (CKD_HEADER_SIZE + CKD_TRACK_SIZE) / 512;
+    $blocks = int($size / 512) if $size < $blocks * 512;
+    my $data = read_image_head($path, $format, undef, $blocks);
     my $header = eval { parse_ckd_header($data, $size, 1) };
     die "cannot import '$path' as CKD volume: $@" if $@;
+    my $volser = ckd_volser($data);
+    $header->{volser} = $volser if defined($volser);
     return $header;
 }
 

@@ -192,10 +192,11 @@ my $resolve_cdrom_alias = sub {
 };
 
 # Used in import-enabled API endpoints. Parses drives using the extended '_with_alloc' schema.
+# in the order of the drives (ckd2 before ckd10), so the numbers of new volumes follow them
 my $foreach_volume_with_alloc = sub {
     my ($param, $func) = @_;
 
-    for my $opt (sort keys $param->%*) {
+    for my $opt (PVE::QemuServer::Drive::sort_drive_keys(keys $param->%*)) {
         next if !PVE::QemuServer::is_valid_drivename($opt);
 
         my $drive = PVE::QemuServer::Drive::parse_drive($opt, $param->{$opt}, 1);
@@ -928,6 +929,8 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                                 $storecfg, $storeid, $source, $disk->{format},
                             ),
                         );
+                        # without a name: the VOLSER of a CKD image
+                        $volume_name //= $source_header->{volser} if $source_header;
                     }
 
                     if ($live_import && $ds ne 'efidisk0') {
@@ -1002,6 +1005,8 @@ my sub create_disks : prototype($$$$$$$$$$$) {
                                     $storecfg, $storeid, undef, $disk->{format},
                                 ),
                             );
+                            # without a name: the VOLSER of a CKD image
+                            $volume_name //= $source_header->{volser} if $source_header;
                         }
 
                         if ($live_import && $ds ne 'efidisk0') {

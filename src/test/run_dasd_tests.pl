@@ -643,6 +643,41 @@ like(
     'cut image options: local paths only',
 );
 
+# the VOLSER from the volume label (record 3 of track 0)
+{
+    my %e = (map { (chr(ord('A') + $_) => 0xc1 + $_) } 0 .. 8);
+    $e{ chr(ord('J') + $_) } = 0xd1 + $_ for 0 .. 8;
+    $e{ chr(ord('S') + $_) } = 0xe2 + $_ for 0 .. 7;
+    $e{ chr(ord('0') + $_) } = 0xf0 + $_ for 0 .. 9;
+    $e{' '} = 0x40;
+    $e{'@'} = 0x7c;
+    my $ebcdic = sub { join('', map { chr($e{$_}) } split(//, $_[0])) };
+    my $track = sub {
+        my ($volser) = @_;
+        my $t = pack('C n n', 0, 0, 0);
+        $t .= pack('n n C C n', 0, 0, 0, 0, 8) . ("\0" x 8); # R0
+        $t .= pack('n n C C n', 0, 0, 1, 4, 24) . $ebcdic->('IPL1') . ("\0" x 24);
+        $t .= pack('n n C C n', 0, 0, 2, 4, 144) . $ebcdic->('IPL2') . ("\0" x 144);
+        $t .= pack('n n C C n', 0, 0, 3, 4, 80)
+            . $ebcdic->('VOL1')
+            . $ebcdic->('VOL1')
+            . $ebcdic->($volser)
+            . ("\0" x 70);
+        return $header . $t . ("\xff" x 8);
+    };
+    is(PVE::QemuServer::DASD::ckd_volser($track->('RES001')), 'RES001', 'VOLSER');
+    is(PVE::QemuServer::DASD::ckd_volser($track->('WORK  ')), 'WORK', 'short VOLSER');
+    is(PVE::QemuServer::DASD::ckd_volser($track->('SYS@01')), undef, 'national character: none');
+    is(PVE::QemuServer::DASD::ckd_volser($header . ("\0" x 1024)), undef, 'unformatted: none');
+    is(PVE::QemuServer::DASD::ckd_volser(substr($track->('RES001'), 0, 600)), undef, 'cut: none');
+
+    $dasd->mock(read_image_head => sub { return $track->('SYS001') });
+    my $source =
+        PVE::QemuServer::DASD::check_ckd_import_source('/x.3390', 'raw', 512 + 3339 * $cyl);
+    is($source->{volser}, 'SYS001', 'CKD import source: VOLSER');
+    $dasd->unmock('read_image_head');
+}
+
 # cutting the slack of copied volumes, with the real tools
 SKIP: {
     skip 'qemu-img/qemu-io not installed', 10 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
@@ -728,5 +763,26 @@ SKIP: {
         'cylinders for QEMU',
     );
 }
+
+# volumes allocated in the order of the drives
+is_deeply(
+    [PVE::QemuServer::Drive::sort_drive_keys(qw(ckd10 ckd2 fba1 ckd0 ckd1 efidisk0 name))],
+    [qw(ckd0 ckd1 ckd2 ckd10 efidisk0 fba1 name)],
+    'drive keys by interface and index',
+);
+
+# the size of the disk an s390x VM IPLs from
+is(
+    PVE::QemuServer::Drive::bootdisk_size(
+        {},
+        {
+            ipl => 'ckd1,loadparm=0A82DC',
+            ckd0 => 'local:500/vm-500-SYS001.qcow2,devno=0a80,size=100',
+            ckd1 => 'local:500/vm-500-RES001.qcow2,devno=0a81,size=8539292672',
+        },
+    ),
+    8539292672,
+    'IPL disk size',
+);
 
 done_testing();
