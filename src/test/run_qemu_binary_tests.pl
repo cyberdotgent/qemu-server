@@ -61,13 +61,19 @@ for my $test ($tests->@*) {
     );
 }
 
+# QEMU 11.2 and later append " (secure)" to the machine types that are meant to be secure against
+# malicious guests: not part of the description
 my $machine_help = <<'EOF';
 Supported machines are:
-x-test-sys           Made-up unversioned machine type (secure)
+x-test-mf            Made-up unversioned machine type (secure)
+x-test-other         Made-up machine type (secure) of another kind
 none                 empty machine
+mf                   Made-up mainframe machine (alias of mf-v1)
+mf-v1                Made-up mainframe machine (secure)
 s390-ccw-virtio-11.1 Virtual s390x machine (version 11.1) (secure)
 s390-ccw-virtio      Virtual s390x machine (version 11.2) (alias of s390-ccw-virtio-11.2)
 s390-ccw-virtio-11.2 Virtual s390x machine (version 11.2) (default) (secure)
+s390-ccw-virtio-5.1  Virtual s390x machine (version 5.1) (deprecated) (secure)
 EOF
 
 my $binary = "$dir/kvm-machines";
@@ -75,13 +81,35 @@ file_set_contents($binary, "#!/bin/sh\ncat <<'EOF'\n${machine_help}EOF\n", 0755)
 is_deeply(
     PVE::QemuServer::Helpers::kvm_machine_types($binary),
     {
-        'x-test-sys' => 'Made-up unversioned machine type (secure)',
+        'x-test-mf' => 'Made-up unversioned machine type',
+        'x-test-other' => 'Made-up machine type (secure) of another kind',
         none => 'empty machine',
-        's390-ccw-virtio-11.1' => 'Virtual s390x machine (version 11.1) (secure)',
+        mf => 'Made-up mainframe machine (alias of mf-v1)',
+        'mf-v1' => 'Made-up mainframe machine',
+        's390-ccw-virtio-11.1' => 'Virtual s390x machine (version 11.1)',
         's390-ccw-virtio' => 'Virtual s390x machine (version 11.2) (alias of s390-ccw-virtio-11.2)',
-        's390-ccw-virtio-11.2' => 'Virtual s390x machine (version 11.2) (default) (secure)',
+        's390-ccw-virtio-11.2' => 'Virtual s390x machine (version 11.2) (default)',
+        's390-ccw-virtio-5.1' => 'Virtual s390x machine (version 5.1) (deprecated)',
     },
-    'machine types with descriptions from -machine help, including aliases and unversioned ones',
+    'machine types with descriptions from -machine help, including aliases and unversioned ones,'
+        . ' without the (secure) annotation',
 );
+for my $test (
+    ['x-test-mf', 1],
+    ['x-test-other', 0],
+    ['none', 0],
+    ['mf', 1],
+    ['mf-v1', 1],
+    ['s390-ccw-virtio', 1],
+    ['s390-ccw-virtio-5.1', 1],
+    ['unknown', 0],
+) {
+    my ($type, $expected) = $test->@*;
+    is(
+        PVE::QemuServer::Helpers::kvm_machine_type_is_secure($binary, $type),
+        $expected,
+        "machine type $type secure: $expected",
+    );
+}
 
 done_testing();

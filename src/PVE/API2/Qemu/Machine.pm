@@ -61,6 +61,13 @@ __PACKAGE__->register_method({
                     optional => 1,
                     description => "The description of an unversioned machine type.",
                 },
+                secure => {
+                    type => 'boolean',
+                    optional => 1,
+                    description => "Set for the machine types of the QEMU build that QEMU marks"
+                        . " as secure against malicious guests (QEMU 11.2 and later, unversioned"
+                        . " machine types only).",
+                },
                 'new-vm-default' => {
                     type => 'boolean',
                     optional => 1,

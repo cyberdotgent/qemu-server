@@ -292,6 +292,9 @@ sub s390x_mainframe_machine_entries {
                 version => $version,
                 class => 'mainframe',
                 description => $types->{$id},
+                (PVE::QemuServer::Helpers::kvm_machine_type_is_secure($kvm_binary, $id)
+                    ? (secure => 1)
+                    : ()),
             };
     }
     return $entries;

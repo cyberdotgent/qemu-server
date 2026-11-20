@@ -122,10 +122,13 @@ sub kvm_device_types {
 }
 
 my $kvm_machine_types = {};
+my $kvm_machine_types_secure = {};
 my $kvm_machine_types_mtime = {};
 
 # Returns a hash with the names of the machine types (including aliases) the QEMU binary supports,
-# and their descriptions as values.
+# and their descriptions as values. QEMU 11.2 and later append " (secure)" to the descriptions of
+# machine types that are meant to be secure against malicious guests: the annotation is not part
+# of the description, see kvm_machine_type_is_secure().
 sub kvm_machine_types {
     my ($binary) = @_;
 
@@ -136,22 +139,38 @@ sub kvm_machine_types {
         && ($kvm_machine_types_mtime->{$binary} // -1) == $st->mtime;
 
     my $types = {};
+    my $secure = {};
     my $list_started;
     my $code = sub {
         my $line = shift;
         if (!$list_started) {
             $list_started = $line =~ m/^Supported machines are:/;
         } elsif ($line =~ m/^(\S+)\s*(.*?)\s*$/) {
-            $types->{$1} = length($2) ? $2 : $1;
+            my ($name, $description) = ($1, $2);
+            $secure->{$name} = 1 if $description =~ s/ \(secure\)$//;
+            $types->{$name} = length($description) ? $description : $name;
         }
     };
 
     PVE::Tools::run_command([$binary, '-machine', 'help'], outfunc => $code);
 
     $kvm_machine_types->{$binary} = $types;
+    $kvm_machine_types_secure->{$binary} = $secure;
     $kvm_machine_types_mtime->{$binary} = $st->mtime;
 
     return $types;
+}
+
+# Whether QEMU annotates the machine type (or the target of the alias) as secure in its
+# '-machine help' (QEMU 11.2 and later), see kvm_machine_types().
+sub kvm_machine_type_is_secure {
+    my ($binary, $type) = @_;
+
+    my $types = kvm_machine_types($binary);
+    my $secure = $kvm_machine_types_secure->{$binary} // {};
+    return 1 if $secure->{$type};
+    my ($target) = ($types->{$type} // '') =~ m/\(alias of ([^)\s]+)\)/;
+    return defined($target) && $secure->{$target} ? 1 : 0;
 }
 
 # Without the 'iplable' and 'ipl-method' device properties, QEMU's s390-ccw firmware can IPL from
