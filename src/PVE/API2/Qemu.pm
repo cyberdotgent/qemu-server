@@ -1280,6 +1280,7 @@ my $generaloptions = {
     'ostype' => 1,
     'protection' => 1,
     'reboot' => 1,
+    'sclp3270-model' => 1,
     'sclplm-codepage' => 1,
     'sclplm-syslog' => 1,
     'startdate' => 1,
@@ -3741,6 +3742,8 @@ my $update_vm_api = sub {
                     );
                 } elsif ($opt eq 'sclplm-syslog' || $opt eq 'sclplm-codepage') {
                     die "only s390x VMs have an SCLP line-mode console\n" if $arch ne 's390x';
+                } elsif ($opt eq 'sclp3270-model') {
+                    die "only s390x VMs have an integrated 3270 console\n" if $arch ne 's390x';
                 }
             }
             # the CCW devices with a device number (a 3270 terminal has it as default key)

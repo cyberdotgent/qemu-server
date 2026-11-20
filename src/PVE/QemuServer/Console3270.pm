@@ -39,9 +39,22 @@ my $suppressed_actions = [
     qw(Printer PrintText Transfer Trace ScreenTrace),
 ];
 
-# The model of the integrated 3270 console and of terminals without a configured model. It is
-# fixed for the lifetime of the VM, so use the one every 3270 application supports.
-our $DEFAULT_MODEL = 2;
+# The model of the integrated 3270 console and of terminals without a configured model, fixed for
+# the lifetime of the VM (of its sessions): 4 (43x80). A mainframe OS may write 43x80 screens to the integrated
+# 3270 console of the HMC, its IPL console, which a model 2 cannot show, and the 3270
+# applications of mainframe systems handle model 4 displays as well as model 2 ones.
+our $DEFAULT_MODEL = 4;
+
+# The option for the model of the integrated 3270 console, like the 'model' of a 3270 terminal.
+our $sclp3270_model_desc = {
+    optional => 1,
+    type => 'string',
+    enum => [qw(2 3 4 5)],
+    default => $DEFAULT_MODEL,
+    description => "The 3270 model the integrated 3270 console (SCLP) of an s390x VM with a"
+        . " mainframe OS type emulates: 2 (24x80), 3 (32x80), 4 (43x80) or 5 (27x132). Its"
+        . " session emulates it as long as the VM runs, a change applies at the next start.",
+};
 
 sub unit_name {
     my ($vmid) = @_;
@@ -66,7 +79,7 @@ sub get_consoles {
     return {} if PVE::QemuServer::Helpers::get_vm_arch($conf) ne 's390x';
 
     my $consoles = {};
-    $consoles->{3270} = $DEFAULT_MODEL
+    $consoles->{3270} = $conf->{'sclp3270-model'} // $DEFAULT_MODEL
         if grep { $_ eq '3270' } PVE::QemuServer::Helpers::get_s390x_consoles($conf)->@*;
     for (my $i = 0; $i < $PVE::QemuServer::Helpers::MAX_TERMINALS; $i++) {
         my $value = $conf->{"terminal$i"} or next;

@@ -68,6 +68,12 @@ for my $test ($terminal_tests->@*) {
 my $ifaces = PVE::QemuServer::Helpers::terminal_ifaces();
 is(scalar($ifaces->@*), 23, 'terminal interfaces: 4 serial ports, 3 SCLP consoles, 16 terminals');
 ok((grep { $_ eq 'terminal15' } $ifaces->@*), 'last 3270 terminal is a terminal interface');
+is_deeply(
+    [$ifaces->@[0 .. 3]],
+    [qw(sclplm 3270 sclp serial0)],
+    'terminal interfaces: SCLP line mode, SCLP 3270, the ASCII consoles first',
+);
+is($ifaces->[7], 'terminal0', 'terminal interfaces: then the 3270 terminals');
 
 my $device_help = <<'EOF';
 Controller/Bridge/Hub devices:
@@ -104,8 +110,26 @@ is_deeply(
 );
 is_deeply(
     PVE::QemuServer::Console3270::get_consoles({ arch => 's390x', ostype => 'other' }),
+    { 3270 => 4 },
+    '3270 consoles: the integrated 3270 console of other OS types, model 4 by default',
+);
+is_deeply(
+    PVE::QemuServer::Console3270::get_consoles({
+        arch => 's390x',
+        ostype => 'other',
+        'sclp3270-model' => '2',
+    }),
     { 3270 => 2 },
-    '3270 consoles: the integrated 3270 console of other OS types, model 2',
+    '3270 consoles: the configured model of the integrated 3270 console',
+);
+is_deeply(
+    PVE::QemuServer::Console3270::get_consoles({
+        arch => 's390x',
+        ostype => 'l26',
+        'sclp3270-model' => '5',
+    }),
+    {},
+    '3270 consoles: no integrated 3270 console for Linux, whatever its model',
 );
 is_deeply(
     PVE::QemuServer::Console3270::get_consoles({
@@ -114,7 +138,7 @@ is_deeply(
         terminal1 => 'devno=0.0.0701,model=4',
         terminal15 => '070f,model=5',
     }),
-    { 3270 => 2, terminal0 => 2, terminal1 => 4, terminal15 => 5 },
+    { 3270 => 4, terminal0 => 4, terminal1 => 4, terminal15 => 5 },
     '3270 consoles: the terminals with their models',
 );
 is_deeply(
@@ -123,7 +147,7 @@ is_deeply(
         ostype => 'l26',
         terminal3 => '0.0.0300',
     }),
-    { terminal3 => 2 },
+    { terminal3 => 4 },
     '3270 consoles: terminals of a Linux VM',
 );
 is_deeply(

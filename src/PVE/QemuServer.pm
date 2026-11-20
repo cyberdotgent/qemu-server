@@ -430,6 +430,7 @@ EODESC
     },
     'sclplm-syslog' => $PVE::QemuServer::SclpLog::syslog_desc,
     'sclplm-codepage' => $PVE::QemuServer::SclpLog::codepage_desc,
+    'sclp3270-model' => $PVE::QemuServer::Console3270::sclp3270_model_desc,
     netboot => $PVE::QemuServer::Netboot::netboot_desc,
     'netboot-cmdline' => $PVE::QemuServer::Netboot::netboot_cmdline_desc,
     bootdisk => {
@@ -985,6 +986,7 @@ my $terminal_fmt = {
         optional => 1,
         type => 'string',
         enum => [qw(2 3 4 5)],
+        default => $PVE::QemuServer::Console3270::DEFAULT_MODEL,
         description => "The 3270 model the console emulates: 2 (24x80), 3 (32x80), 4 (43x80) or"
             . " 5 (27x132). The session of the terminal emulates it as long as the VM runs.",
     },

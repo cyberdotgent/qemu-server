@@ -321,11 +321,12 @@ sub is_linux_ostype {
 our $MAX_TERMINALS = 16;
 
 # The interfaces 'qm terminal' and termproxy can open: serial ports, the SCLP consoles of s390x
-# VMs and their 3270 terminals.
+# VMs and their 3270 terminals. In the order of the consoles of s390x VMs: SCLP line
+# mode, SCLP 3270, the ASCII consoles (SCLP VT220, serial ports), the 3270 terminals.
 sub terminal_ifaces {
     return [
+        qw(sclplm 3270 sclp),
         (map { "serial$_" } 0 .. 3),
-        qw(sclp sclplm 3270),
         (map { "terminal$_" } 0 .. $MAX_TERMINALS - 1),
     ];
 }
