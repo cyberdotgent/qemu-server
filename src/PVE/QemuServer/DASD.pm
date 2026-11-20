@@ -414,6 +414,22 @@ sub assert_ckd_target_storage {
     );
 }
 
+# Cut the CKD volume $volid (file $path in format $format, $size bytes) to its $cylinders, without
+# changing its header. Returns the new size.
+my sub cut_ckd_padding {
+    my ($volid, $path, $format, $size, $cylinders) = @_;
+
+    my $exact = ckd_volume_size($cylinders);
+    print "volume '$volid': cutting the padding after the $cylinders cylinders of the CKD"
+        . " image ($size to $exact bytes)\n";
+    run_command(
+        ['/usr/bin/qemu-img', 'resize', '--shrink', '-f', $format, $path, $exact],
+        outfunc => sub { },
+        errmsg => "unable to cut '$path' to $exact bytes",
+    );
+    return $exact;
+}
+
 # Make the volume of a copied CKD image what QEMU accepts: cut the padding after its cylinders
 # (from the source, or the storage rounding up the size) on file based storages, refuse a volume
 # with padding that QEMU would not accept elsewhere. The header is not changed: if it has no
@@ -429,17 +445,46 @@ sub fit_ckd_volume {
 
     my ($storeid) = PVE::Storage::parse_volume_id($volid);
     if (storage_has_exact_size($storecfg, $storeid, $format)) {
-        print "volume '$volid': cutting the padding after the $cylinders cylinders of the CKD"
-            . " image ($size to $exact bytes)\n";
-        run_command(
-            ['/usr/bin/qemu-img', 'resize', '--shrink', '-f', $format, $path, $exact],
-            outfunc => sub { },
-            errmsg => "unable to cut '$path' to $exact bytes",
-        );
-        return $exact;
+        return cut_ckd_padding($volid, $path, $format, $size, $cylinders);
     }
     assert_ckd_target_storage($storecfg, $storeid, $format, $header, "volume '$volid'");
     return $size;
+}
+
+# The header of the volume $volid, the source of a copy, if it is a CKD image whose header has a
+# cylinder count, else undef. For volumes that are no drive (unused volumes): nothing in the
+# config tells that they are CKD volumes or their cylinders, only the header can. Without a
+# cylinder count in the header (Hercules images), the padding after the last cylinder cannot be
+# told from the data, so such a volume is copied as it is.
+sub unused_ckd_copy_source_header {
+    my ($storecfg, $volid) = @_;
+
+    my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
+    my $data = read_image_head($path, $format);
+    my $identifier = substr($data, 0, 8);
+    return undef if $identifier ne 'CKD_P370' && $identifier ne 'CKD_P064';
+
+    my $header = eval { parse_ckd_header($data, $size, 1) };
+    return undef if !$header || !$header->{'high-cylinder'};
+    return $header;
+}
+
+# Cut the padding after the cylinders of the copied CKD volume $volid that is no drive (an unused
+# volume, see unused_ckd_copy_source_header()) on file based storages, as for a drive (see
+# fit_ckd_volume()). On other storages it stays as it is: whether QEMU accepts the padding is
+# checked once the volume is attached as a drive. Returns the size of the volume.
+sub fit_unused_ckd_volume {
+    my ($storecfg, $volid, $header) = @_;
+
+    my ($path, $format, $size) = volume_path_and_format($storecfg, $volid);
+    my $cylinders = $header->{cylinders};
+    die "volume '$volid' is too small for $cylinders cylinders\n"
+        if $size < ckd_volume_size($cylinders);
+    return $size if $size == ckd_volume_size($cylinders);
+
+    my ($storeid) = PVE::Storage::parse_volume_id($volid);
+    return $size if !storage_has_exact_size($storecfg, $storeid, $format);
+    return cut_ckd_padding($volid, $path, $format, $size, $cylinders);
 }
 
 # Fit (see fit_ckd_volume()) the CKD volume $volid that was just copied or restored with its own
@@ -483,6 +528,23 @@ sub init_ckd_volume {
     write_image_head($path, $format, ckd_header($cylinders));
 }
 
+# What to do about the padding of a CKD volume ($header, see parse_ckd_header()) that the
+# installed QEMU does not accept, for the message that refuses it (which already names the
+# pve-qemu-kvm version that accepts it). A move to a file based storage cuts the padding if the
+# header has a cylinder count, the volume attached as a drive or not. Without one, a move keeps
+# it: the volume is only usable with QEMU that accepts the padding, given its 'cylinders'.
+sub ckd_padding_remedy {
+    my ($header) = @_;
+
+    my $exact = ckd_volume_size($header->{cylinders});
+    return "; or move the volume ('qm disk move', attached or unused) to a file based storage"
+        . " (like a directory or NFS storage) with format raw or qcow2, which cuts it to exactly"
+        . " $exact bytes"
+        if $header->{'high-cylinder'};
+    return "; then attach it with 'cylinders=$header->{cylinders}'. A move keeps the padding of"
+        . " an image whose header has no cylinder count";
+}
+
 # Check the CKD header of an existing volume, as QEMU will use it. $cylinders: those of the drive,
 # if known (see parse_ckd_header()). The header is never changed. Returns the parsed header.
 sub check_ckd_volume {
@@ -495,10 +557,7 @@ sub check_ckd_volume {
         # padding the installed QEMU does not accept: say what to do about it
         if (my $padded = eval { parse_ckd_header($data, $size, 1, $cylinders) }) {
             chomp($err);
-            die "volume '$volid': $err - move it to a file based storage (like a directory or"
-                . " NFS storage) with format raw or qcow2, which cuts the padding to exactly "
-                . ckd_volume_size($padded->{cylinders})
-                . " bytes\n";
+            die "volume '$volid': $err" . ckd_padding_remedy($padded) . "\n";
         }
         die "volume '$volid': $err";
     }

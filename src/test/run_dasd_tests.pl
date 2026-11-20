@@ -379,7 +379,7 @@ SKIP: {
         );
         like(
             (eval { PVE::QemuServer::DASD::check_ckd_volume({}, 'x', 1113) } // $@),
-            qr/bytes after its 1113 cylinders: its header has no cylinder count.*move it to a file based storage/,
+            qr/bytes after its 1113 cylinders: its header has no cylinder count.*s390x10 or later accepts the padding; then attach it with 'cylinders=1113'\. A move keeps the padding/,
             "$what: QEMU-mod up to +s390x9 needs the exact size",
         );
         like(
@@ -777,7 +777,7 @@ like(
 
 # cutting the slack of copied volumes, with the real tools
 SKIP: {
-    skip 'qemu-img/qemu-io not installed', 10 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
+    skip 'qemu-img/qemu-io not installed', 21 if !-x '/usr/bin/qemu-img' || !-x '/usr/bin/qemu-io';
 
     my $dir = tempdir(CLEANUP => 1);
     my $vol;
@@ -805,6 +805,7 @@ SKIP: {
     );
     my $exact = 512 + 1113 * $cyl;
     my $zpdt_1113 = PVE::QemuServer::DASD::ckd_header(1113, '000000000001', 'CKD_P064', 4);
+    my $header_1113 = PVE::QemuServer::DASD::ckd_header(1113, '000000000002', 'CKD_P370');
     for my $f (qw(raw qcow2)) {
         $format = $f;
         $vol = "$dir/zpdt.$f";
@@ -838,8 +839,74 @@ SKIP: {
     like($@, qr/rounds the size up/, 'zvol with padding refused');
     like(
         (eval { PVE::QemuServer::DASD::check_ckd_volume($storecfg, 'x') } // $@),
-        qr/16384 bytes after its 1113 cylinders.*move it to a file based storage.*exactly $exact bytes/,
+        qr/16384 bytes after its 1113 cylinders.*accepts the padding; or move the volume \('qm disk move', attached or unused\) to a file based storage .*exactly $exact bytes$/,
         'attaching a zvol with slack: what to do',
+    );
+    unlike(
+        (eval { PVE::QemuServer::DASD::check_ckd_volume($storecfg, 'x') } // $@),
+        qr/cylinders=/,
+        'attaching a zvol with slack: no cylinders for a header with a count',
+    );
+
+    # an unused volume: CKD by its header, the padding cut on file based storages
+    for my $f (qw(raw qcow2)) {
+        $storeid = 'local';
+        $format = $f;
+        $vol = "$dir/unused.$f";
+        unlink($vol);
+        PVE::Tools::run_command(
+            ['/usr/bin/qemu-img', 'create', '-f', $f, $vol, $exact + 310272],
+            outfunc => sub { },
+        );
+        PVE::QemuServer::DASD::write_image_head($vol, $f, $header_1113);
+        my $source = PVE::QemuServer::DASD::unused_ckd_copy_source_header($storecfg, 'x');
+        is($source->{cylinders}, 1113, "$f: unused volume recognized as CKD by its header");
+        is(
+            PVE::QemuServer::DASD::fit_unused_ckd_volume($storecfg, 'x', $source),
+            $exact,
+            "$f: unused volume: padding cut on file based storage",
+        );
+        is(
+            PVE::QemuServer::DASD::check_ckd_volume($storecfg, 'x')->{cylinders},
+            1113,
+            "$f: unused volume usable",
+        );
+        is(
+            PVE::QemuServer::DASD::fit_unused_ckd_volume($storecfg, 'x', { cylinders => 1113 }),
+            $exact,
+            "$f: unused volume without padding unchanged",
+        );
+    }
+    # on a zvol it stays as it is, whatever QEMU accepts: checked once it is attached
+    $storeid = 'local-zfs';
+    $format = 'raw';
+    $vol = "$dir/zvol-unused.raw";
+    PVE::Tools::run_command(
+        ['/usr/bin/qemu-img', 'create', '-f', 'raw', $vol, $exact + 16384],
+        outfunc => sub { },
+    );
+    PVE::QemuServer::DASD::write_image_head($vol, 'raw', $header_1113);
+    my $unused = PVE::QemuServer::DASD::unused_ckd_copy_source_header($storecfg, 'x');
+    is(
+        PVE::QemuServer::DASD::fit_unused_ckd_volume($storecfg, 'x', $unused),
+        $exact + 16384,
+        'unused volume on a zvol: padding kept',
+    );
+    # Hercules header without a cylinder count: the padding cannot be told, copied as it is
+    my $hercules_1113 = $header_1113;
+    substr($hercules_1113, 18, 2, "\0\0");
+    PVE::QemuServer::DASD::write_image_head($vol, 'raw', $hercules_1113);
+    is(
+        PVE::QemuServer::DASD::unused_ckd_copy_source_header($storecfg, 'x'),
+        undef,
+        'unused Hercules volume without a cylinder count: copied as it is',
+    );
+    # not a CKD image
+    PVE::QemuServer::DASD::write_image_head($vol, 'raw', "\0" x 512);
+    is(
+        PVE::QemuServer::DASD::unused_ckd_copy_source_header($storecfg, 'x'),
+        undef,
+        'unused volume that is no CKD image: copied as it is',
     );
 }
 
